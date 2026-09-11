@@ -73,16 +73,6 @@ def patch_renderer_8881(extracted: Path, token: str, port: int) -> None:
     ):
         account_component = _replace_once(account_component, old, new, label)
 
-    # Native self-updates are disabled in this independently patched app.
-    # State who manages updates without inventing a check or download result.
-    account_component = _replace_once(
-        account_component,
-        '  rows.push((0, Gz.jsx)(tS.Separator, {}, "codex-mux-separator"));',
-        '  rows.push((0, Gz.jsx)(kg, { variant: "label", children: "Router-managed updates" }, "codex-mux-updates"));\n'
-        '  rows.push((0, Gz.jsx)(tS.Separator, {}, "codex-mux-separator"));',
-        "router update status",
-    )
-
     # These exports are also used by lazy native screens before the profile
     # menu renders. Initialize its native module bindings on first use.
     for old, new in (

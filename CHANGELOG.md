@@ -5,6 +5,19 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-11
+
+- Keep normal native updates enabled, including manual checks and feature policy.
+  Updates may replace the router; repairs are explicitly user-requested.
+- Preserve the publisher's Sparkle public key, configure the documented official
+  payload name, and sign the standalone Autoupdate helper with the copied app.
+- Restore the original account menu without a managed-update label.
+- Add a read-only, credential-free health check for notification-only monitoring.
+  It never repairs, installs, restarts or rolls back the app.
+- Retain build backups and explicit rebuild tools for later Codex-assisted repair.
+
+[0.2.3]: https://github.com/nvemuri4649/codex-subscription-router/tree/restore-upstream
+
 ## [0.2.2] - 2026-09-11
 
 - Support verified official build 8881 with original router UI and current

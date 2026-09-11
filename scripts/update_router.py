@@ -103,8 +103,8 @@ def main(argv: list[str] | None = None) -> int:
                 source_status = {'supported': False, 'reason': str(error)}
             print(json.dumps({'installed': current, 'source': source_status,
                 'pending': read_json(state / 'updates/pending.json'),
-                'policy': 'Unknown sources cannot replace the working app.',
-                'installedUpdateProtection': current.get('updatePolicy', 'legacy build; install the prepared protected update')}, indent=2))
+                'policy': 'Native app updates are allowed. This CLI is only for explicit router rebuilds and repairs.',
+                'installedUpdatePolicy': current.get('updatePolicy', 'legacy native updater')}, indent=2))
         elif args.action == 'prepare':
             prepare(args)
         elif args.action == 'activate':

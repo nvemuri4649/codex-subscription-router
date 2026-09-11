@@ -85,3 +85,12 @@ extracted and verified with strict code signing and Gatekeeper notarization.
 Build 8576 remains supported with the corrected updater capability gates.
 Source bundles are snapshotted and revalidated before extraction and packaging.
 See [managed updates](UPDATES.md) for update and rollback guarantees and limits.
+
+## Release 0.2.3
+
+Builds 8576 and 8881 retain native updater behavior. The original `SUPublicEDKey`
+is preserved and `SUBundleName=ChatGPT` enables the official archive's app name
+matching. Sparkle's standalone Autoupdate executable and its nested helper
+bundles use the copied app's signing identity. Update verification is retained.
+An actual subsequent native update installation has not yet been verified.
+Native updates can remove the patch; monitoring reports that for manual repair.

@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_current import asar_header_hash, patch_main, seed_state
+from build_current import asar_header_hash, patch_main, seed_state, enable_native_updates
 
 
 class SeedStateTests(unittest.TestCase):
@@ -189,18 +189,17 @@ class DesktopUpdaterPatchTests(unittest.TestCase):
     def patch(self):
         patch_main(self.extracted, self.root / "router state", self.root / "account home")
 
-    def test_native_initialization_remains_and_both_menu_capabilities_are_disabled(self):
+    def test_native_initialization_and_update_menu_capabilities_remain_enabled(self):
         self.patch()
         self.assertEqual(self.bootstrap.read_text().count(self.policy_init), 1)
-        self.assertIn("const S=!1,C=!1;", self.main.read_text())
-        self.assertNotIn("shouldIncludeSparkle", self.main.read_text())
-        self.assertNotIn("shouldIncludeUpdater", self.main.read_text())
+        self.assertIn(self.menu_flags, self.main.read_text())
+        self.assertNotIn("S=!1,C=!1", self.main.read_text())
 
-    def test_manager_capability_is_disabled_without_stubbing_manual_methods(self):
+    def test_native_manager_and_manual_update_methods_are_preserved(self):
         self.patch()
         updater = self.updater.read_text()
-        self.assertIn("sparkleManager:new Ww({enableUpdater:!1,buildFlavor:r})", updater)
-        self.assertNotIn(self.manager_flag, updater)
+        self.assertIn(self.manager_flag, updater)
+        self.assertNotIn("enableUpdater:!1", updater)
         self.assertIn(self.manager_method, updater)
 
     def test_primary_runtime_install_and_cli_bootstrap_remain_available(self):
@@ -222,6 +221,21 @@ class DesktopUpdaterPatchTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "expected one reviewed anchor"):
                         self.patch()
                     self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
+
+class NativeUpdateMetadataTests(unittest.TestCase):
+    def test_publisher_key_and_feed_are_preserved(self):
+        info = {'SUPublicEDKey': 'publisher-public-key', 'SUFeedURL': 'https://example.test/feed', 'CFBundleIdentifier': 'app.cdxmux.multi'}
+        enable_native_updates(info)
+        self.assertEqual(info['SUPublicEDKey'], 'publisher-public-key')
+        self.assertEqual(info['SUFeedURL'], 'https://example.test/feed')
+        self.assertEqual(info['SUBundleName'], 'ChatGPT')
+        self.assertTrue(info['SUEnableAutomaticChecks'])
+        self.assertEqual(info['CFBundleIdentifier'], 'app.cdxmux.multi')
+
+    def test_missing_update_verification_key_is_not_silently_accepted(self):
+        with self.assertRaisesRegex(RuntimeError, 'public update key'):
+            enable_native_updates({})
 
 
 if __name__ == "__main__":

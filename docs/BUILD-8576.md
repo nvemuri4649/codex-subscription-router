@@ -1,5 +1,10 @@
 # Build 8576 validation
 
+Follow-up: the original updater-disable attempt missed a native capability path.
+Version 0.2.3 intentionally preserves native updates, fixes the discovered Sparkle
+helper signing mismatch, and adds notification-only monitoring. See [current
+update policy](UPDATES.md).
+
 This fork restores the upstream `vrlda` experience at commit `97fbebc` and ports
 it to ChatGPT desktop 26.903.71938, build 8576, with Codex CLI 0.153.4. The
 experimental Casual/Intensive UI, role routing, and custom remote transport

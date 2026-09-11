@@ -13,8 +13,8 @@ available, using the account configured on that remote host; this original
 router does not pool remote subscriptions.
 
 Screenshots below show the upstream interface. See [build 8576 validation](docs/BUILD-8576.md)
-for the earlier fork checks and native integration limits. [Managed updates](docs/UPDATES.md)
-describes the protected update and rollback workflow.
+for the earlier fork checks and native integration limits. [Native updates and repair alerts](docs/UPDATES.md)
+describes the current update policy.
 
 ![Multi-subscription account menu](screenshots/account-menu.png)
 
@@ -126,8 +126,10 @@ dependency, creates the independently signed app, and launches it:
 curl -fsSL https://raw.githubusercontent.com/nvemuri4649/codex-subscription-router/main/install.sh | /bin/bash
 ```
 
-The installer prepares updates without stopping running tasks. Activation waits
+The source installer prepares a patched copy without stopping running tasks. Activation waits
 until the router has been quit; the previous app is retained.
+
+Normal updates subsequently use the native updater and may replace the patch.
 
 The installer keeps its source checkout in
 `~/.codex-subscription-router/source`. On an existing installation it uses the
@@ -247,24 +249,14 @@ the reset is consumed only for that account.
 
 ## Update or rebuild
 
-Official app updates are disabled inside the router copy. Its own update path
-verifies a source snapshot and builds a separate candidate. Unsupported versions
-leave the working app intact. Prepare first, then activate after finishing tasks
-and quitting the app:
+Normal native updates stay enabled. An update can remove or break the router;
+the user decides when to request a repair. The notification-only health check
+reports detected component loss and never fixes or rolls back the app.
 
-```sh
-python3 scripts/update_router.py prepare
-python3 scripts/update_router.py activate --launch
-```
-
-Use `--source /path/to/ChatGPT.app` for a separately extracted official bundle.
-The prior app stays available for `python3 scripts/update_router.py rollback`;
-rollback refuses unverified database schema changes. Logins and history are never
-rolled back. [Managed updates](docs/UPDATES.md) explains the checks and limits.
-
-Future native UI releases still require reviewed compatibility adapters. This
-protects the installed app from a bad update; it cannot guarantee indefinite
-access to changing remote services.
+Logins, routing metadata, history, source code and prior bundles remain outside
+the updated app. Explicit developer rebuild tools are available when Codex is
+called in to repair a new version; their source compatibility checks do not
+block native updates. See [updates and repair alerts](docs/UPDATES.md).
 
 ## Local data and security
 
@@ -318,7 +310,8 @@ current fork checks are recorded in [BUILD-8576.md](docs/BUILD-8576.md).
   positive quota in the original algorithm. They can be selected manually;
   missing windows do not establish unlimited usage.
 
-- Upstream ChatGPT updates can require new, reviewed patch anchors.
+- Normal updates are enabled and can remove the router UI/routing. A repair
+  requires a user request and, where needed, new compatibility anchors.
 - The initial merged history fetch is limited to 500 threads per account.
 - Combined “skills explored” totals can count the same skill once per account
   because the upstream profile response exposes counts rather than skill IDs.

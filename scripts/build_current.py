@@ -75,20 +75,20 @@ def patch_main(extracted: Path, state: Path, primary_home: Path, source_build: s
     text = replace_once(text,
         "a.app.setPath(`userData`,w({appDataPath:a.app.getPath(`appData`),buildFlavor:Z,env:process.env}))",
         "a.app.setPath(`userData`," + json.dumps(str(state / "desktop")) + ")", "independent desktop state")
-    # Keep native initialization: when disabled, it resolves the launch-policy
-    # promise so manual update requests settle instead of waiting indefinitely.
+    # Preserve the native updater and its feature-policy initialization.
+    # Updates may replace the patch; monitoring reports that for manual repair.
     text = replace_once(text, "try{await i.initialize();let{runMainAppStartup:e}",
         "try{await i.initialize();let{runMainAppStartup:e}", "updater launch-policy initialization")
     bindings = {
         "8576": ("r", "S=a.i.shouldIncludeSparkle(c,process.platform,process.env),C=a.i.shouldIncludeUpdater(c,process.platform,process.env)", "S=!1,C=!1"),
         "8881": ("s", "C=a.i.shouldIncludeSparkle(u,process.platform,process.env),w=a.i.shouldIncludeUpdater(u,process.platform,process.env)", "C=!1,w=!1"),
     }
-    updater_arg, flags, disabled_flags = bindings[source_build]
+    updater_arg, flags, _ = bindings[source_build]
     updater = replace_once(updater_path.read_text(),
         f"enableUpdater:i.i.shouldIncludeUpdater({updater_arg},process.platform,process.env)",
-        "enableUpdater:!1", "copied-app updater capability")
+        f"enableUpdater:i.i.shouldIncludeUpdater({updater_arg},process.platform,process.env)", "native updater capability")
     main = replace_once(main_path.read_text(),
-        flags, disabled_flags, "copied-app update menu capabilities")
+        flags, flags, "native update menu capabilities")
     # Environment is established before imported bootstrap modules can compute paths.
     early = extracted / ".vite/build/early-bootstrap.js"
     env = {"CODEX_HOME": str(primary_home), "CODEX_MUX_HOME": str(state / "router"),
@@ -97,11 +97,21 @@ def patch_main(extracted: Path, state: Path, primary_home: Path, source_build: s
         + "process.env.CODEX_CLI_PATH=require('node:path').join(process.resourcesPath,'codex');\n"
     early_text += early.read_text()
     # Validate all reviewed anchors before changing the extracted bundles.
-    # The disabled manager also guards manual and late feature-latch paths.
+    # The stock updater manager and menu capabilities are intentionally intact.
     bootstrap.write_text(text)
     updater_path.write_text(updater)
     main_path.write_text(main)
     early.write_text(early_text)
+
+
+def enable_native_updates(info: dict) -> None:
+    """Keep publisher verification and the official payload's supported name."""
+    if not isinstance(info.get('SUPublicEDKey'), str) or not info['SUPublicEDKey'].strip():
+        raise RuntimeError('Official Sparkle public update key is required')
+    # SUBundleName is Sparkle's documented host name override. Its installer
+    # uses this to find ChatGPT.app in the official signed archive.
+    info['SUBundleName'] = 'ChatGPT'
+    info['SUEnableAutomaticChecks'] = True
 
 
 def state_import(state: Path, source_home: Path, import_state: Path | None = None, controller_account: str | None = None) -> dict | None:
@@ -232,9 +242,7 @@ def build(args: argparse.Namespace) -> dict | None:
         info['CFBundleExecutable']='CodexSubscriptionRouterLauncher'
         info['CrProductDirName']=NAME
         info['CFBundleURLTypes']=[{'CFBundleURLName':NAME,'CFBundleURLSchemes':['codex-subscription-router']}]
-        for key in list(info):
-            if key.startswith('SU'): del info[key]
-        info['SUEnableAutomaticChecks']=False
+        enable_native_updates(info)
         info['ElectronAsarIntegrity']={'Resources/app.asar':{'algorithm':'SHA256','hash':asar_header_hash(resources/'app.asar')}}
         (staged/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         # Re-sign changed Electron bundles; embedded vendor services retain their
@@ -243,9 +251,12 @@ def build(args: argparse.Namespace) -> dict | None:
         legacy.sign_runtime_executable(staged/'Contents/MacOS/ChatGPT',identity,
             identifier=BUNDLE_ID+'.runtime',runtime=False)
         frameworks=staged/'Contents/Frameworks'
+        # Sparkle's standalone installer is not a nested bundle and must be
+        # signed explicitly before its enclosing framework.
+        legacy.sign_runtime_executable(frameworks/'Sparkle.framework/Versions/B/Autoupdate',identity,runtime=True)
         bundles={p.resolve() for p in frameworks.rglob('*') if p.suffix in ('.app','.framework','.xpc') and p.is_dir()}
         for bundle in sorted(bundles,key=lambda p:len(p.parts),reverse=True):
-            legacy.sign_runtime_bundle(bundle,identity,runtime=identity!='-')
+            legacy.sign_runtime_bundle(bundle,identity,runtime=identity!='-' or 'Sparkle.framework' in bundle.parts)
         legacy.sign_runtime_bundle(staged,identity,identifier=BUNDLE_ID,runtime=False)
         legacy.run(['codesign','--verify','--deep','--strict',str(staged)])
         # A candidate is immutable once built. The activation manager handles
@@ -256,7 +267,7 @@ def build(args: argparse.Namespace) -> dict | None:
     report={'app':str(destination),'sourceVersion':version[0],'sourceBuild':version[1],
         'sourceAsarSha256':digest,'signing':'ad-hoc' if identity=='-' else 'certificate',
         'state':str(state),'codexHome':str(args.codex_home.expanduser().resolve()),
-        'routerVersion':(ROOT/'VERSION').read_text().strip(),'updatePolicy':'router-managed',
+        'routerVersion':(ROOT/'VERSION').read_text().strip(),'updatePolicy':'native-updates-notify-only',
         'builtAt':time.strftime('%Y-%m-%dT%H:%M:%S%z')}
     if record_build:
         seed_state(state,args.codex_home.expanduser().resolve(),args.import_state.expanduser().resolve() if args.import_state else None,args.controller_account)

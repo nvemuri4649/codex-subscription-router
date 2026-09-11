@@ -47,7 +47,7 @@ backups before the links are installed.
 ## Desktop integration
 
 The patcher extracts `app.asar`, verifies exact upstream anchors, inserts the
-account UI, disables self-update, and repacks the archive with an updated
+account UI, preserves native updates, and repacks the archive with an updated
 integrity hash. The app receives a separate Chromium profile and URL scheme.
 
 Legacy builders re-sign the Computer Use service, runtime, and callers under
