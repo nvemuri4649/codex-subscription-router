@@ -16,13 +16,13 @@ Source ASAR SHA-256: `58fef82480b9064e209b5b2fd934992e8d71515aea8084482369cfeaff
 
 ## Automated checks
 
-Go unit tests and vet pass across the router, account store, control API, and remote backend. Race tests cover state, routing, control, and remote transport. UI behavior tests cover per-draft state, readiness, host scope, project defaults, keyboard control, running tasks, and transport startup. Python tests verify anchor rejection, archive integrity hashing, and existing-login ownership without copying credentials.
+Go unit tests and vet pass across the router, account store, control API, and remote backend. Race tests cover state, routing, control, and remote transport. All 20 UI behavior tests pass and cover per-draft state, readiness, host scope, project defaults, keyboard control, running tasks, and transport startup. Python tests verify anchor rejection, archive integrity hashing, and existing-login ownership without copying credentials.
 
 Synthetic accounts verify explicit account dispatch, removal of private workflow metadata, preservation of existing task ownership, idle-only account changes, personal controller authentication, and unchanged native quota errors. These tests do not establish real personal-account authentication.
 
 ## Live local checks
 
-The generated desktop starts successfully, its renderer sends workflow requests through the native connection, and its token-authenticated loopback endpoint reports the current Work account connected through ChatGPT authentication.
+The final generated desktop starts successfully, its renderer sends workflow requests through the native connection, and its token-authenticated loopback endpoint reports the current Work account connected through ChatGPT authentication. Its startup log contains no JavaScript reference, type, or syntax failure. The final bundle also passes deep signature verification.
 
 A separate router smoke test used the real official app-server and the existing Work login. It verified that missing Personal rejects Casual before task creation, then created an **ephemeral** Intensive task and received the expected model response. No smoke task was saved to normal task history. This verifies account dispatch and generation below the UI; it does not verify clicking Send in the native composer.
 
