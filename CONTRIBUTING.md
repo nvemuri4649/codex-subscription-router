@@ -34,6 +34,5 @@ request.
 ## Pull requests
 
 Keep changes focused and explain security-sensitive behavior explicitly. The
-CI checks Go tests and vetting, JavaScript syntax and workflow behavior, Python
-compilation and build/patch unit tests, native C syntax, and source metadata
-consistency. Use `npm run check` to run that same test set locally.
+CI checks Go tests and vetting, JavaScript syntax, Python compilation, native C
+syntax, and release metadata consistency.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a separate Personal/Work desktop from a verified official macOS bundle."""
+"""Build the upstream Subscription Router for reviewed desktop build 8576."""
 from __future__ import annotations
 
 import argparse
@@ -17,15 +17,16 @@ import tempfile
 import time
 
 import patch_app as legacy
-from patch_composer import patch_composer
+from patch_renderer_8576 import patch_renderer_8576
+from patch_settings_8576 import patch_settings_8576
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = "Codex Personal Work"
-BUNDLE_ID = "app.codexpersonalwork.desktop"
-STATE = Path.home() / "Library/Application Support/Codex Personal Work"
+NAME = "Codex Subscription Router"
+BUNDLE_ID = "app.cdxmux.multi"
+STATE = Path.home() / "Library/Application Support/Codex Subscription Router"
 VERSION = ("26.903.71938", "8576")
 SOURCE_HASH = "58fef82480b9064e209b5b2fd934992e8d71515aea8084482369cfeaff1b8ee0"
-PORT = 48124
+PORT = 48123
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -39,67 +40,6 @@ def one(root: Path, pattern: str) -> Path:
     if len(found) != 1:
         raise RuntimeError(f"Expected one {pattern}, found {len(found)}")
     return found[0]
-
-
-def patch_renderer(extracted: Path, token: str) -> None:
-    web = extracted / "webview"
-    index = web / "index.html"
-    index.write_text(replace_once(index.read_text(), "connect-src &#39;self&#39;",
-        f"connect-src &#39;self&#39; http://127.0.0.1:{PORT}", "renderer CSP"))
-    primary = one(web / "assets", "app-primary-*.js")
-    text = primary.read_text()
-    component = (ROOT / "ui/account-menu.js").read_text()
-    component = component.replace("__CODEX_MUX_CONTROL_PORT__", str(PORT)).replace("__CODEX_MUX_CONTROL_TOKEN__", token)
-    component = re.sub(r"\be7\b", "xK", component)
-    component = re.sub(r"\bkXc\b", "Obn", component)
-    bridge = """
-function CodexPersonalWorkBootstrap(){
-  const store=Oe(zb);
-  Obn.useEffect(()=>{
-    const request=(hostId,method,params)=>qT(store,hostId).sendRequest(method,params);
-    globalThis.__codexPersonalWorkRequest=request;
-    const copyText=(text)=>Dw.clipboard.writeText(text);
-    globalThis.__codexPersonalWorkCopyText=copyText;
-    globalThis.dispatchEvent(new Event("codex-personal-work-changed"));
-    return ()=>{
-      if(globalThis.__codexPersonalWorkRequest===request)delete globalThis.__codexPersonalWorkRequest;
-      if(globalThis.__codexPersonalWorkCopyText===copyText)delete globalThis.__codexPersonalWorkCopyText;
-    };
-  },[store]);
-  return null;
-}
-"""
-    text = replace_once(text, "function Sbn(e){", component + bridge + "\nfunction Sbn(e){", "profile controls")
-    text = replace_once(text, "children:[n,(0,xK.jsx)(Cbn,{...e})]",
-        "children:[n,(0,xK.jsx)(CodexPersonalWorkBootstrap,{}),(0,xK.jsx)(Cbn,{...e})]", "host RPC bridge")
-    text = replace_once(text, "usageItems:wt,workspaceSettingsRightIcon:P",
-        "usageItems:(0,xK.jsxs)(xK.Fragment,{children:[(0,xK.jsx)(CodexMuxAccountMenu,{}),wt]}),workspaceSettingsRightIcon:P", "sidebar account menu")
-    text = replace_once(text, "triggerButton:Ot,onOpenChange:c,children:[F,null]",
-        "triggerButton:Ot,onOpenChange:CodexMuxProfileMenuOpenChange(c),children:[F,null]", "device login menu lifetime")
-    text = replace_once(text, "children:[bt,kt,Nt,null,Pt,null,Ft,Lt,wt,Rt]",
-        "children:[bt,kt,Nt,null,Pt,null,Ft,Lt,(0,xK.jsx)(CodexMuxAccountMenu,{}),wt,Rt]", "compact account menu")
-    primary.write_text(text)
-    thread = web / "assets/local-conversation-thread-9210b06f69b1.js"
-    text = thread.read_text()
-    component = """
-function CodexPersonalWorkTask(){
- const route=s(ps).value, project=Ee(K), host=Ee(Mr);
- const Selector=globalThis.CodexMuxWorkflowSelector;
- const request=CodexPersonalWorkTask.requests??=new Map();
- const hostId=host.id;
- if(!request.has(hostId))request.set(hostId,(method,params)=>{
-   if(!globalThis.__codexPersonalWorkRequest) return Promise.reject(new Error('Connecting to this host…'));
-   return globalThis.__codexPersonalWorkRequest(hostId,method,params);
- });
- if(!Selector||route.routeKind!=="local-thread")return null;
- return (0,cE.jsx)(Z.Section,{sectionKey:"personal-work",title:"Workflow",children:(0,cE.jsx)(Selector,{
-   threadId:route.conversationId,projectKey:project.cwd??undefined,hostId,request:request.get(hostId)
- })});
-}
-"""
-    text = replace_once(text, "function aE(){", component + "\nfunction aE(){", "task workflow component")
-    text = replace_once(text, "children:[T,m,E,D,w,O]", "children:[(0,cE.jsx)(CodexPersonalWorkTask,{}),T,m,E,D,w,O]", "native task summary")
-    thread.write_text(text)
 
 
 def patch_main(extracted: Path, state: Path, primary_home: Path) -> None:
@@ -124,24 +64,44 @@ def patch_main(extracted: Path, state: Path, primary_home: Path) -> None:
         if "async initializeUpdater(" in text:
             text, count = re.subn(r"async initializeUpdater\(([^)]*)\)\{", r"async initializeUpdater(\1){return;", text)
             path.write_text(text)
-    main = one(extracted / ".vite/build", "main-*.js")
-    text = main.read_text()
-    old = "r=`${VC} && exec ${n.Wn(t)} app-server proxy`"
-    new = 'r=`${VC} && if [ -x "$HOME/.local/share/codex-personal-work/codex" ]; then exec "$HOME/.local/share/codex-personal-work/codex" app-server proxy; else exec ${n.Wn(t)} app-server proxy; fi`'
-    text = replace_once(text, old, new, "opt-in SSH account router")
-    main.write_text(text)
 
 
-def seed_state(state: Path, source_home: Path) -> None:
-    """The user explicitly assigned this existing login to Work; never copy tokens."""
+def state_import(state: Path, source_home: Path, import_state: Path | None = None, controller_account: str | None = None) -> dict | None:
+    """Validate metadata before packaging; return None when existing state is kept."""
     path = state / 'router/state.json'
     if path.exists():
+        if controller_account:
+            existing = json.loads(path.read_text())
+            current = next((a for a in existing['accounts'] if a.get('controller')), None)
+            if not current or current['id'] != controller_account or not current.get('enabled'):
+                raise RuntimeError('Existing router state has a different or disabled primary account; preserve it or explicitly change its controller before rebuilding')
+        return None
+    if import_state:
+        old = json.loads(import_state.read_text())
+        if old.get('version') != 1 or not old.get('accounts'):
+            raise RuntimeError('Unsupported account metadata import')
+        # No credential files are read or copied. Unknown experimental fields are dropped.
+        data = {'version': 1, 'accounts': old['accounts'], 'threadOwner': old.get('threadOwner', {})}
+    else:
+        data = {'version': 1, 'accounts': [{'id': 'primary', 'label': 'Primary', 'codexHome': str(source_home),
+            'enabled': True, 'controller': True, 'createdAt': int(time.time())}], 'threadOwner': {}}
+    if controller_account:
+        selected = next((a for a in data['accounts'] if a['id'] == controller_account), None)
+        if not selected or not selected.get('enabled'):
+            raise RuntimeError('Requested primary account must exist and be enabled')
+        for account in data['accounts']:
+            account['controller'] = account['id'] == controller_account
+    return data
+
+
+def seed_state(state: Path, source_home: Path, import_state: Path | None = None, controller_account: str | None = None) -> None:
+    """Import routing metadata while keeping every existing credential home in place."""
+    data = state_import(state, source_home, import_state, controller_account)
+    if data is None:
         return
-    data = {'version':1,'accounts':[{'id':'primary','label':'Work','codexHome':str(source_home),
-        'enabled':True,'controller':True,'createdAt':int(time.time())}], 'threadOwner':{},
-        'routing':{'defaultMode':'casual','roleAccounts':{'personal':'','work':'primary'},'projects':[]}}
+    path = state / 'router/state.json'
     with path.open('x') as stream:
-        json.dump(data,stream,indent=2)
+        json.dump(data, stream, indent=2)
     path.chmod(0o600)
 
 
@@ -164,7 +124,9 @@ def build(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Unreviewed source build {version}; update compatibility anchors before building")
     if destination.exists() and not args.force:
         raise RuntimeError("Destination exists. Use --force to retain a backup and replace it.")
-    if args.force:
+    state_import(state, args.codex_home.expanduser().resolve(),
+        args.import_state.expanduser().resolve() if args.import_state else None, args.controller_account)
+    if args.force and not args.check_only:
         legacy.ensure_components_are_stopped((destination,))
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
@@ -180,14 +142,15 @@ def build(args: argparse.Namespace) -> None:
     asar = legacy.ensure_asar_tool()
     identity = legacy.resolve_signing_identity(True)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".personal-work-build-", dir=destination.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".subscription-router-build-", dir=destination.parent) as temporary:
         temp = Path(temporary)
         extracted = temp / "extracted"
         legacy.run([str(asar), "extract", str(source_asar), str(extracted)])
-        patch_renderer(extracted, token)
-        patch_composer(extracted)
+        before = {path: path.stat().st_mtime_ns for path in extracted.rglob('*.js')}
+        patch_renderer_8576(extracted, token, PORT)
+        patch_settings_8576(extracted, token, PORT)
         patch_main(extracted, state, args.codex_home.expanduser().resolve())
-        for path in [one(extracted/'webview/assets','app-primary-*.js'), one(extracted/'webview/assets','app-initial-*.js'), extracted/'webview/assets/local-conversation-thread-9210b06f69b1.js',one(extracted/'.vite/build','main-*.js')]:
+        for path in sorted(path for path in extracted.rglob('*.js') if path.stat().st_mtime_ns != before.get(path)):
             legacy.run(["node", "--check", str(path)])
         if args.check_only:
             print(f"Verified renderer and main-process patch anchors for {version[0]} ({version[1]})")
@@ -196,12 +159,12 @@ def build(args: argparse.Namespace) -> None:
         legacy.run(["ditto", str(source), str(staged)])
         launcher_source = (ROOT / 'native/launcher.c').read_text().replace('Codex Subscription Router', NAME)
         launcher_source = replace_once(launcher_source,
-            '"--user-data-dir=%s/Library/Application Support/Codex Personal Work",\n                 home',
+            '"--user-data-dir=%s/Library/Application Support/Codex Subscription Router",\n                 home',
             '"%s", ' + json.dumps('--user-data-dir=' + str(state / 'desktop')), 'independent launcher profile')
         launcher_c = temp / 'launcher.c'
         launcher_c.write_text(launcher_source)
         legacy.run(['xcrun','clang','-arch','arm64','-Os','-Wall','-Wextra','-o',
-            str(staged/'Contents/MacOS/CodexPersonalWorkLauncher'),str(launcher_c)])
+            str(staged/'Contents/MacOS/CodexSubscriptionRouterLauncher'),str(launcher_c)])
         resources = staged / "Contents/Resources"
         packed = temp / "app.asar"
         legacy.run([str(asar),"pack",str(extracted),str(packed),"--unpack-dir",legacy.ASAR_UNPACK_DIRECTORIES])
@@ -212,9 +175,9 @@ def build(args: argparse.Namespace) -> None:
         legacy.build_proxy(resources/'codex')
         info['CFBundleDisplayName']=info['CFBundleName']=NAME
         info['CFBundleIdentifier']=BUNDLE_ID
-        info['CFBundleExecutable']='CodexPersonalWorkLauncher'
+        info['CFBundleExecutable']='CodexSubscriptionRouterLauncher'
         info['CrProductDirName']=NAME
-        info['CFBundleURLTypes']=[{'CFBundleURLName':NAME,'CFBundleURLSchemes':['codex-personal-work']}]
+        info['CFBundleURLTypes']=[{'CFBundleURLName':NAME,'CFBundleURLSchemes':['codex-subscription-router']}]
         for key in list(info):
             if key.startswith('SU'): del info[key]
         info['SUEnableAutomaticChecks']=False
@@ -235,8 +198,13 @@ def build(args: argparse.Namespace) -> None:
             backup=state/'backups'/time.strftime('%Y%m%d-%H%M%S')/destination.name
             backup.parent.mkdir(parents=True)
             destination.rename(backup)
-        staged.rename(destination)
-    seed_state(state,args.codex_home.expanduser().resolve())
+        try:
+            staged.rename(destination)
+        except OSError:
+            if not destination.exists() and 'backup' in locals() and backup.exists():
+                backup.rename(destination)
+            raise
+    seed_state(state,args.codex_home.expanduser().resolve(),args.import_state.expanduser().resolve() if args.import_state else None,args.controller_account)
     report={'app':str(destination),'sourceVersion':version[0],'sourceBuild':version[1],'sourceAsarSha256':digest,'signing':'ad-hoc' if identity=='-' else 'certificate','state':str(state),'builtAt':time.strftime('%Y-%m-%dT%H:%M:%S%z')}
     (state/'build.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
@@ -248,6 +216,8 @@ if __name__ == '__main__':
     parser.add_argument('--destination',type=Path,default=Path.home()/'Applications'/f'{NAME}.app')
     parser.add_argument('--state',type=Path,default=STATE)
     parser.add_argument('--codex-home',type=Path,default=Path.home()/'.codex')
+    parser.add_argument('--import-state',type=Path,help='Import existing account metadata without copying credentials')
+    parser.add_argument('--controller-account',help='Existing account ID for normal ChatGPT chats; selected only on first import')
     parser.add_argument('--force',action='store_true')
     parser.add_argument('--check-only',action='store_true')
     build(parser.parse_args())

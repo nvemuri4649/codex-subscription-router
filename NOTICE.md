@@ -1,11 +1,8 @@
 # Notices
 
-Personal & Work is maintained in `nvemuri4649/codex-subscription-router`. It is
-derived from Bennett Blackham's MIT-licensed `b-nnett/codex-subscription-router`
-and incorporates work from `vrlda/codex-subscription-router`. Original copyright
-and license notices are preserved. The 0.3.0 fork adds explicit personal/work
-workflow routing and current desktop/SSH integration; earlier subscription
-pooling features and test reports remain attributed to their original authors.
+This maintained fork is derived from Bennett Blackham's MIT-licensed
+`b-nnett/codex-subscription-router`. Original copyright and license notices are
+preserved. Fork modifications are maintained by vrlda contributors.
 
 This repository contains original patching and multiplexing source. It does not
 include and must not be used to redistribute the official ChatGPT application,

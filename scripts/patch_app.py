@@ -1516,14 +1516,23 @@ def patch_app(
 def main() -> int:
     args = parse_args()
     try:
-        patch_app(
-            args.source,
-            args.destination,
-            args.force,
-            args.allow_adhoc_signing,
-            args.allow_untested_source,
-            args.allow_signing_team_change,
-        )
+        info = plistlib.loads((args.source.expanduser() / "Contents/Info.plist").read_bytes())
+        if str(info.get("CFBundleVersion")) == "8576":
+            import build_current
+            build_current.build(argparse.Namespace(
+                source=args.source, destination=args.destination, force=args.force,
+                state=build_current.STATE, codex_home=Path.home() / ".codex",
+                import_state=None, controller_account=None, check_only=False,
+            ))
+        else:
+            patch_app(
+                args.source,
+                args.destination,
+                args.force,
+                args.allow_adhoc_signing,
+                args.allow_untested_source,
+                args.allow_signing_team_change,
+            )
     except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
         print(f"patch failed: {error}", file=sys.stderr)
         return 1

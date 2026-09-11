@@ -1,59 +1,47 @@
-# Personal & Work smoke test
+# Signed-app smoke test
 
-Use the exact source build in [compatibility](COMPATIBILITY.md). Record the
-commit, macOS version, signing mode, source hash, and which checks actually
-passed. A successful build or a synthetic-account test is not a completed
-interactive smoke test.
+Complete this checklist on the exact official build recorded in
+`docs/COMPATIBILITY.md` before publishing a release draft. Use a team-backed
+signature and reuse the same Apple team as the previous installed build.
 
-## App copy
+## Build and identity
 
-- Confirm the official app archive is unchanged and the generated copy passes
+- Confirm the patcher reports the expected version, build, and ASAR SHA-256.
+- Verify the official `/Applications/ChatGPT.app` is unchanged.
+- Verify the app and every nested Computer Use application with
   `codesign --verify --deep --strict`.
-- Launch the copy and confirm it opens its independent window/profile rather
-  than opening a window in the original app's process.
-- Confirm the native profile menu, composer, and task details render in light
-  and dark themes with keyboard-accessible Casual/Intensive controls.
+- Confirm the installed app and helper report the intended bundle IDs and the
+  same `TeamIdentifier`.
 
-## Accounts and workflows
+## Accounts and routing
 
-- Confirm the existing account is explicitly Work and Personal is unassigned.
-  Casual should show a connection requirement, not use Work implicitly.
-- Sign in to Personal through the official device-login page. Verify the
-  displayed personal/work identities and that app ChatGPT/Work requests use
-  Personal after the native account refresh.
-- Start a Casual local task and an Intensive local task. Verify actual account
-  assignment and follow-up continuity, not only the selected UI label.
-- Confirm two draft composers can choose different modes without changing each
-  other's default. Verify the choice survives asynchronous worktree creation.
-- Set a project default, open a fresh task there, and verify inheritance. Check
-  that an unrelated project and existing tasks remain unchanged.
-- Switch an idle task explicitly, verify its history remains available, and
-  confirm a running task cannot switch.
-- Confirm imported work history is deduplicated and retains Work ownership after
-  adding Personal or changing defaults.
-- Using synthetic tests or a legitimately limited account, verify that the
-  native usage-limit error remains on the chosen account. No task should
-  continue automatically on another subscription.
-- Check native account/model/usage views against the selected identity. Never
-  present Personal's usage as the Intensive account's usage.
+- Connect at least two subscriptions and confirm photos, plans, masked emails,
+  pooled usage, and loading states.
+- Start chats until each account has received one; confirm every follow-up stays
+  on its original account.
+- Spoof one depleted account and confirm the thread continues on an account with
+  quota. Spoof all accounts depleted and confirm the combined alert.
+- Open a quota-triggered reset sheet, switch subscriptions, consume a reset, and
+  confirm only the selected account changes.
 
-## SSH hosts
+## Settings and plugins
 
-- Install the opt-in wrapper following [REMOTE.md](REMOTE.md), using the exact
-  native host ID. Verify host-scoped account identities and project defaults.
-- Confirm an unconfigured host uses its current account, disables workflow
-  controls, and still starts native tasks. A failing configured router must
-  block workflow submission rather than substitute local credentials.
-- Verify one authorized task and idle switch on the configured host, then
-  disconnect/reconnect and confirm continuity and ownership.
+- Confirm Profile opens in the combined state, uses 20 px avatar overlap, and
+  toggles between combined and per-account statistics.
+- In Settings → Plugins, select each subscription and verify Apps, MCP status,
+  and MCP OAuth login reflect that account while installed definitions remain
+  shared.
 
-## Configuration and native access
+## Appshots and Computer Use
 
-- Change an ordinary shared setting after mapping Personal and confirm it
-  survives configuration synchronization and a restart.
-- Treat Computer Use/Appshots as unverified until exercised on this exact
-  signing configuration. Do not reuse the historical upstream report as proof.
+- In System Settings, grant Accessibility to Codex Subscription Router and
+  Screen & System Audio Recording to Codex Subscription Router Computer Use.
+  Quit and reopen when macOS asks.
+- Capture an Appshot from the attachment menu and with the Command-key shortcut.
+- Run a Computer Use task and confirm the native helper performs the action
+  without falling back to `osascript`.
+- Rebuild once with the same signing team and confirm existing permissions still
+  work without adding duplicate permission rows.
 
-Record results and outstanding checks in
-[PERSONAL-WORK-VALIDATION.md](PERSONAL-WORK-VALIDATION.md). Keep private account
-identities, device codes, and conversation content out of published evidence.
+Record the tested commit, macOS version, signing team ID, and any deviations in
+the release draft before publishing it.

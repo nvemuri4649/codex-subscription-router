@@ -12,35 +12,34 @@ func (m *Multiplexer) aggregateThreadList(request protocol.Message) {
 	entries := m.childEntries()
 	type result struct {
 		accountID string
-		index     int
 		threads   []map[string]any
 	}
 	results := make(chan result, len(entries))
 	var wait sync.WaitGroup
-	for index, entry := range entries {
+	for _, entry := range entries {
 		wait.Add(1)
-		go func(index int, entry childEntry) {
+		go func(entry childEntry) {
 			defer wait.Done()
-			results <- result{accountID: entry.account.ID, index: index, threads: m.listAllThreads(entry, request.Params)}
-		}(index, entry)
+			results <- result{accountID: entry.account.ID, threads: m.listAllThreads(entry, request.Params)}
+		}(entry)
 	}
 	wait.Wait()
 	close(results)
 
-	ordered := make([]result, len(entries))
-	for accountResult := range results {
-		ordered[accountResult.index] = accountResult
-	}
 	threads := make([]map[string]any, 0)
 	seen := make(map[string]bool)
-	for _, accountResult := range ordered {
+	for accountResult := range results {
 		for _, thread := range accountResult.threads {
 			if threadID, ok := thread["id"].(string); ok {
 				if seen[threadID] {
 					continue
 				}
 				seen[threadID] = true
-				_ = m.store.LearnThreadOwner(threadID, accountResult.accountID)
+				owner := accountResult.accountID
+				if primary, exists := m.store.Primary(); exists {
+					owner = primary.ID
+				}
+				_ = m.store.LearnThreadOwner(threadID, owner)
 			}
 			threads = append(threads, thread)
 		}

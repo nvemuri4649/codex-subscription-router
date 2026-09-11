@@ -29,7 +29,6 @@ type persistedState struct {
 	Version     int               `json:"version"`
 	Accounts    []Account         `json:"accounts"`
 	ThreadOwner map[string]string `json:"threadOwner"`
-	Routing     RoutingSettings   `json:"routing"`
 }
 
 // Store persists routing metadata. OAuth credentials remain isolated; rollout
@@ -42,7 +41,6 @@ type Store struct {
 	primaryCodexHome string
 	accounts         []Account
 	owners           map[string]string
-	routing          RoutingSettings
 }
 
 func Open(root, primaryCodexHome string) (*Store, error) {
@@ -61,7 +59,6 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 		path:             filepath.Join(root, "state.json"),
 		primaryCodexHome: primaryCodexHome,
 		owners:           make(map[string]string),
-		routing:          defaultRouting(),
 	}
 	data, err := os.ReadFile(store.path)
 	switch {
@@ -74,7 +71,6 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 			return nil, fmt.Errorf("unsupported state version %d", persisted.Version)
 		}
 		store.accounts = persisted.Accounts
-		store.routing = normalizeRouting(persisted.Routing)
 		if persisted.ThreadOwner != nil {
 			store.owners = persisted.ThreadOwner
 		}
@@ -165,6 +161,19 @@ func (s *Store) Controller() (Account, bool) {
 		return Account{}, false
 	}
 	return s.accounts[0], true
+}
+
+// Primary identifies the original history/configuration home. It can differ
+// from the controller account used for the desktop's ChatGPT authentication.
+func (s *Store) Primary() (Account, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, account := range s.accounts {
+		if samePath(account.CodexHome, s.primaryCodexHome) {
+			return account, true
+		}
+	}
+	return Account{}, false
 }
 
 func (s *Store) AddAccount(label string) (Account, error) {
@@ -329,14 +338,24 @@ func (s *Store) SetThreadOwner(threadID, accountID string) error {
 	if s.owners[threadID] == accountID {
 		return nil
 	}
-	previous, existed := s.owners[threadID]
+	s.owners[threadID] = accountID
+	return s.saveLocked()
+}
+
+// LearnThreadOwner imports previously unassigned history. Listing a shared
+// index must never overwrite sticky ownership or an explicit/failover move.
+func (s *Store) LearnThreadOwner(threadID, accountID string) error {
+	if threadID == "" || accountID == "" {
+		return errors.New("thread and account IDs are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.owners[threadID]; exists {
+		return nil
+	}
 	s.owners[threadID] = accountID
 	if err := s.saveLocked(); err != nil {
-		if existed {
-			s.owners[threadID] = previous
-		} else {
-			delete(s.owners, threadID)
-		}
+		delete(s.owners, threadID)
 		return err
 	}
 	return nil
@@ -357,7 +376,6 @@ func (s *Store) saveLocked() error {
 		Version:     stateVersion,
 		Accounts:    s.accounts,
 		ThreadOwner: s.owners,
-		Routing:     s.routing,
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {

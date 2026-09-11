@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 
 	"github.com/b-nnett/codex-subscription-router/internal/protocol"
-	"github.com/gorilla/websocket"
 )
 
 type Inbound struct {
@@ -39,7 +38,6 @@ type Child struct {
 	env       []string
 	inbound   chan<- Inbound
 
-	websocket *websocket.Conn
 	command   *exec.Cmd
 	stdin     io.WriteCloser
 	writeMu   sync.Mutex
@@ -52,9 +50,6 @@ type Child struct {
 
 func Start(accountID, codexHome, sqliteHome, executable string, args, baseEnv []string, inbound chan<- Inbound) (*Child, error) {
 	env := childEnvironment(baseEnv, codexHome, sqliteHome)
-	if environmentValue(baseEnv, "CODEX_MUX_TRANSPORT") == "unix" {
-		return startWebSocketChild(accountID, codexHome, executable, env, inbound)
-	}
 	command := exec.Command(executable, args...)
 	command.Env = env
 	stdin, err := command.StdinPipe()
@@ -111,9 +106,6 @@ func (c *Child) SendRaw(encoded []byte) error {
 		return errors.New("Codex app-server is closed")
 	default:
 	}
-	if c.websocket != nil {
-		return c.websocket.WriteMessage(websocket.TextMessage, encoded)
-	}
 	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("write Codex app-server request: %w", err)
 	}
@@ -151,10 +143,7 @@ func (c *Child) Request(ctx context.Context, method string, params json.RawMessa
 }
 
 func (c *Child) Close() error {
-	if c.websocket != nil {
-		return c.websocket.Close()
-	}
-	if c.command == nil || c.command.Process == nil {
+	if c.command.Process == nil {
 		return nil
 	}
 	return c.command.Process.Signal(os.Interrupt)
@@ -165,48 +154,37 @@ func (c *Child) readLoop(stdout io.Reader) {
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	for scanner.Scan() {
 		raw := append([]byte(nil), scanner.Bytes()...)
-		c.receiveRaw(raw)
+		message, err := protocol.Parse(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "codex-mux: %s emitted invalid JSON: %v\n", c.accountID, err)
+			continue
+		}
+		if message.Method == "" && len(message.ID) > 0 {
+			key := protocol.RequestIDKey(message.ID)
+			c.pendingMu.Lock()
+			responses := c.pending[key]
+			if responses != nil {
+				delete(c.pending, key)
+			}
+			c.pendingMu.Unlock()
+			if responses != nil {
+				responses <- response{message: message}
+				continue
+			}
+		}
+		c.inbound <- Inbound{AccountID: c.accountID, Message: message, Raw: raw}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "codex-mux: read %s app-server: %v\n", c.accountID, err)
 	}
 }
 
-func (c *Child) receiveRaw(raw []byte) {
-	message, err := protocol.Parse(raw)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codex-mux: %s emitted invalid JSON: %v\n", c.accountID, err)
-		return
-	}
-	if message.Method == "" && len(message.ID) > 0 {
-		key := protocol.RequestIDKey(message.ID)
-		c.pendingMu.Lock()
-		responses := c.pending[key]
-		if responses != nil {
-			delete(c.pending, key)
-		}
-		c.pendingMu.Unlock()
-		if responses != nil {
-			responses <- response{message: message}
-			return
-		}
-	}
-	c.inbound <- Inbound{AccountID: c.accountID, Message: message, Raw: raw}
-}
-
 func (c *Child) waitLoop() {
 	err := c.command.Wait()
-	c.finished(err)
-}
-
-func (c *Child) finished(err error) {
 	c.closeOnce.Do(func() { close(c.closed) })
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	for key, responses := range c.pending {
-		if err == nil {
-			err = errors.New("Codex app-server connection closed")
-		}
 		responses <- response{err: fmt.Errorf("Codex app-server exited: %w", err)}
 		delete(c.pending, key)
 	}
@@ -227,14 +205,4 @@ func withEnvironment(environment []string, key, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
-}
-
-func environmentValue(environment []string, key string) string {
-	prefix := key + "="
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	return ""
 }

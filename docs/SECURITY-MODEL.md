@@ -1,60 +1,73 @@
-# Personal & Work security model
+# Security model
 
-## Accounts and shared data
+## Trust boundaries
 
-Each added account has its own file-backed CLI and MCP OAuth credentials. The
-original account keeps its existing credential file rather than duplicating
-refresh tokens. Router HTTP/RPC workflow responses contain account metadata,
-not credential contents. The normal app-server authentication path still
-returns the selected account's token to the desktop as required by the official
-app; the router does not log it.
+- The official ChatGPT app is trusted build input and remains unchanged.
+- The patcher has local filesystem and code-signing access by design.
+- Each real Codex child is trusted with only its assigned account home.
+- The injected renderer is trusted with the loopback control token.
+- Other local users and remote origins are outside the control API boundary.
+- Processes running as the same macOS user are not considered isolated from
+  one another; they can already read that user's app data subject to macOS
+  permissions.
 
-These account homes are not operating-system sandboxes. The same user can read
-them, and the backends intentionally share conversation rollouts and the thread
-index. Moving an idle task to another account transfers its context to that
-account. Changing a default does not move existing tasks, and quota exhaustion
-never transfers them automatically.
+## Credentials
 
-Managed MCP/plugin configuration is synchronized from the original Codex home.
-Inline environment values in that configuration therefore reach added account
-homes. Per-account OAuth stores do not make shared inline secrets private to
-one account. Root directories use mode `0700`; metadata and credential-store
-configuration use `0600`.
+OAuth material stays in `auth.json` under each account's Codex home. The
+multiplexer reads an account token only to call the same authenticated ChatGPT
+profile and rate-limit-reset endpoints used by the desktop experience. It does
+not log or return tokens. State persisted by the mux contains account paths,
+labels, enabled state, and thread ownership only.
 
-## Transport
+Conversation rollout files and the SQLite thread index are deliberately shared
+between account children. This enables cross-account continuation and lets the
+official app discover router-created chats. The shared store contains chat
+history, but not the per-account `auth.json` credential files.
 
-The local control API binds to `127.0.0.1` and requires a random 256-bit token on
-private endpoints. The injected renderer holds that token. CORS permits only
-the app origin; CORS does not isolate other processes running as the same user.
-Profile images use HTTPS. Optional legacy test endpoints require both the
-explicit test setting and normal control authentication.
+The state root is mode `0700`; state, config, and control-token files are mode
+`0600`. Existing control tokens are validated as 256-bit hexadecimal values and
+their permissions are repaired on startup.
 
-Remote workflow RPC uses the existing SSH connection, with native host-key
-verification. Each remote host owns its credentials and validates its configured
-host ID. Additional remote backends use private Unix sockets, not an exposed
-TCP listener. Their logs and PID files are private operational data and should
-not be uploaded with bug reports. See [remote setup](REMOTE.md).
+Plugin and MCP configuration is deliberately synchronized from the Primary
+account so installed definitions remain consistent. Inline environment values
+inside those definitions are therefore copied into every isolated account home
+with mode `0600`; account isolation is not a separate secret boundary for
+shared plugin configuration.
 
-## App copy and native services
+## Network
 
-The builder reads the official app, validates the exact supported archive, and
-modifies a separate staged copy. It assigns an independent desktop identity,
-profile, launcher, and URL scheme and disables the copied updater. Signature
-verification is a build check, not an endorsement or a grant of macOS access.
-The original app's permissions are not changed.
+The control server binds to `127.0.0.1`. Private endpoints require the token
+embedded into the independently built local renderer. Profile images must use
+HTTPS. Response sizes and JSON request bodies are bounded.
 
-Vendor Computer Use services retain their original authentication checks. The
-current ad-hoc copy does not claim working Computer Use or Appshots. The older
-patcher's native helper modification/signing flow is retained upstream code;
-its validation does not apply to this builder.
+The project itself does not provide a telemetry or update endpoint. Network
+traffic beyond loopback is performed by the official Codex children or by the
+documented ChatGPT profile and rate-limit APIs.
 
-## Scope and distribution
+## Signing and native access
 
-The router is not an OpenAI product. Source availability and local signing do
-not establish compliance with OpenAI's software or subscription terms. The
-project makes no account-enforcement guarantee or claim of unlimited usage.
+Build 8576 retains vendor service authentication and signatures. Its ad-hoc
+app copy can fail Computer Use/Appshots peer checks; those integrations are
+not claimed as verified. The remaining signing description below applies to
+the older upstream builder.
 
-Only source is distributed. Do not commit or publish app bundles, official ASAR
-archives, extracted vendor files, account homes, tokens, signing keys, or
-unredacted captures. Current validation limits are recorded in
-[Personal Work validation](PERSONAL-WORK-VALIDATION.md).
+
+The source app is copied into a temporary staging directory. Native modules,
+the Computer Use helper, Node runtime, mux, and final app are signed under one
+selected Apple team and verified before replacement. Official OpenAI
+application-group and keychain entitlements are removed from modified callers.
+
+The native helper's caller allowlist is patched to the selected team and the
+independent desktop bundle ID. This is required for the helper's peer checks;
+it does not bypass macOS Accessibility or Screen Recording consent.
+
+## Diagnostics
+
+`CODEX_MUX_UI_TESTS=1` enables deterministic preview and screenshot endpoints.
+They are unavailable during a normal launch, bind only to loopback, and require
+the same control token. Release workflows never set this variable.
+
+## Distribution
+
+Releases contain source only. Publishing the patched `.app`, the official ASAR,
+or any extracted OpenAI binary is outside this project's release process.
