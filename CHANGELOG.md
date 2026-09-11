@@ -5,6 +5,47 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-11
+
+Source version on the Personal & Work branch; no 0.3.0 tag or release has been
+published. Earlier entries describe inherited upstream versions.
+
+### Added
+
+- Explicit Casual/Personal and Intensive/Work account roles, independent draft
+  choices, per-host project defaults, and idle task switching.
+- Current macOS build `8576` patcher with an independent application identity,
+  launcher/profile, source-hash checks, and reviewed native UI anchors.
+- Opt-in native SSH WebSocket transport with host-local accounts, private Unix
+  sockets, and reconnectable additional-account backends.
+- Behavioral tests for routing, native cache invalidation, draft metadata,
+  build guards, and remote transport.
+
+### Changed
+
+- ChatGPT and cloud Work authentication follows the assigned Personal account;
+  choosing Intensive affects the coding task's account.
+- Work laptop setup explicitly assigns the existing account to Work and leaves
+  Personal unassigned pending sign-in.
+- Documentation separates current validation from archived upstream UI and
+  native-service reports. Computer Use/Appshots and two-account native flows
+  remain subject to the current live validation record.
+
+### Removed
+
+- Quota-based account selection, pooled quota routing, automatic failover, and
+  automatic cross-account continuation. Native limit errors stay on the chosen
+  account.
+
+### Fixed
+
+- Shared task lists are deduplicated without reassigning existing task owners.
+- Personal-role changes invalidate the native app's cached authentication.
+- Shared settings continue to use the primary configuration source, so they
+  survive synchronization after Personal is connected.
+- Explicit draft choices are preserved through asynchronous task creation and
+  do not consume a prewarmed task associated with a different account.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added
@@ -53,6 +94,7 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Loopback-only, token-authenticated diagnostic UI states.
 - Source-only CI, draft release automation, security documentation, and smoke tests.
 
-[Unreleased]: https://github.com/vrlda/codex-subscription-router/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/nvemuri4649/codex-subscription-router/commits/personal-work
+[0.3.0]: https://github.com/nvemuri4649/codex-subscription-router/tree/personal-work
 [0.2.0]: https://github.com/vrlda/codex-subscription-router/releases/tag/v0.2.0
 [0.1.0]: https://github.com/b-nnett/codex-subscription-router/releases/tag/v0.1.0

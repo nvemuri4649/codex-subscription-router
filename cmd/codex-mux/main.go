@@ -39,6 +39,12 @@ func run() error {
 		return err
 	}
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "personal-work" {
+		return runPersonalWork(realExecutable, args[1:])
+	}
+	if os.Getenv("CODEX_MUX_REMOTE") == "1" && isAppServerProxy(args) {
+		return runRemoteProxy()
+	}
 	if !isInteractiveAppServer(args) {
 		return passthrough(realExecutable, args)
 	}
@@ -77,36 +83,39 @@ func run() error {
 	}
 	defer multiplexer.Close()
 
-	token, err := loadOrCreateToken(root)
-	if err != nil {
-		return err
-	}
-	port := defaultControlPort
-	if value := os.Getenv("CODEX_MUX_CONTROL_PORT"); value != "" {
-		if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed > 0 && parsed <= 65535 {
-			port = parsed
+	if os.Getenv("CODEX_MUX_NO_CONTROL") != "1" {
+		token, err := loadOrCreateToken(root)
+		if err != nil {
+			return err
 		}
-	}
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codex-mux: account UI unavailable: %v\n", err)
-	} else {
-		controlServer := control.New(
-			listener.Addr().String(),
-			token,
-			multiplexer,
-			os.Getenv("CODEX_MUX_UI_TESTS") == "1",
-		)
-		go func() {
-			if serveErr := controlServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				fmt.Fprintf(os.Stderr, "codex-mux: control server: %v\n", serveErr)
+		port := defaultControlPort
+		if value := os.Getenv("CODEX_MUX_CONTROL_PORT"); value != "" {
+			if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed > 0 && parsed <= 65535 {
+				port = parsed
 			}
-		}()
-		defer func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer shutdownCancel()
-			_ = controlServer.Shutdown(shutdownCtx)
-		}()
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "codex-mux: account UI unavailable: %v\n", err)
+		} else {
+			controlServer := control.New(
+				listener.Addr().String(),
+				token,
+				multiplexer,
+				os.Getenv("CODEX_MUX_UI_TESTS") == "1",
+			)
+			go func() {
+				if serveErr := controlServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+					fmt.Fprintf(os.Stderr, "codex-mux: control server: %v\n", serveErr)
+				}
+			}()
+			defer func() {
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer shutdownCancel()
+				_ = controlServer.Shutdown(shutdownCtx)
+			}()
+		}
+
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)

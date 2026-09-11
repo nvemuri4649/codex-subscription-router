@@ -2,8 +2,10 @@
 
 ## Supported versions
 
-Only the latest tagged source release is supported. Compatibility with a
-specific official ChatGPT build is listed in `docs/COMPATIBILITY.md`.
+The current Personal & Work branch is source version 0.3.0; it does not yet
+have a tagged release. Compatibility and validation limits for the exact
+official desktop input are listed in `docs/COMPATIBILITY.md`. Historical
+upstream releases and screenshots do not establish support for this fork.
 
 ## Reporting a vulnerability
 

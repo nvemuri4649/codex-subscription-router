@@ -1,5 +1,10 @@
+// Injected into the app's renderer. The patcher supplies React (kXc) and JSX (e7).
 const CODEX_MUX_API = "http://127.0.0.1:__CODEX_MUX_CONTROL_PORT__/v1";
 const CODEX_MUX_TOKEN = "__CODEX_MUX_CONTROL_TOKEN__";
+const CODEX_MUX_MODES = [
+  { id: "casual", label: "Casual", role: "personal", description: "Personal account" },
+  { id: "intensive", label: "Intensive", role: "work", description: "Work account" },
+];
 let codexMuxLoginActive = false;
 
 function CodexMuxProfileMenuOpenChange(setOpen) {
@@ -23,855 +28,469 @@ async function codexMuxRequest(path, options = {}) {
   return body;
 }
 
-const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
-  "list-apps",
-  "list-installed-apps",
-  "read-apps",
-  "list-mcp-server-status",
-  "login-mcp-server",
-]);
-
-function codexMuxScopePluginRequest(method, params) {
-  const accountId = globalThis.__codexMuxPluginAccountId;
-  if (
-    !accountId ||
-    !CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS.has(method) ||
-    (params != null &&
-      (typeof params !== "object" || Array.isArray(params)))
-  ) {
-    return params;
+// A host-aware app integration can supply request(method, params) using its
+// existing host RPC connection. No credentials cross this renderer boundary.
+async function codexMuxRoutingRequest(method, params = {}, request = null) {
+  if (request) return request(method, params);
+  const suffix = new URLSearchParams(
+    Object.entries(params).filter(([, value]) => value != null && value !== ""),
+  ).toString();
+  if (method === "personalWork/routing/read") {
+    return codexMuxRequest(`/routing${suffix ? `?${suffix}` : ""}`);
   }
-  return { ...(params || {}), codexMuxAccountId: accountId };
+  const path = method === "personalWork/mode/set" ? "/thread-mode" : "/routing";
+  return codexMuxRequest(path, { method: "POST", body: JSON.stringify(params) });
 }
 
-async function codexMuxProfileData(accountId = null) {
-  const query = accountId
-    ? `?accountId=${encodeURIComponent(accountId)}`
-    : "";
-  const result = await codexMuxRequest(`/profile/combined${query}`);
-  globalThis.__codexMuxCombinedProfileAccounts = result.accounts || [];
-  return result.profile;
+function codexMuxHostRequest(hostId) {
+  if (!hostId || hostId === "local") return null;
+  return (method, params) => {
+    const bridge = globalThis.__codexPersonalWorkRequest;
+    return bridge ? bridge(hostId, method, params) : Promise.reject(new Error("Connecting to this host…"));
+  };
 }
 
-async function codexMuxRateLimitResets(accountId) {
-  return codexMuxRequest(
-    `/accounts/${encodeURIComponent(accountId)}/rate-limit-resets`,
-  );
+function codexMuxBroadcastChange() {
+  window.dispatchEvent(new Event("codex-personal-work-changed"));
 }
 
-async function codexMuxConsumeRateLimitReset(accountId, input) {
-  return codexMuxRequest(
-    `/accounts/${encodeURIComponent(accountId)}/rate-limit-resets/consume`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        creditId: input.creditId ?? null,
-        redeemRequestId: input.redeemRequestId,
-      }),
-    },
-  );
-}
-
-function CodexMuxUsageModal({
-  onClose,
-}) {
-  return (0, e7.jsx)(QLs, {
-    defaultResetCreditsOpen: true,
-    initialAvailableCount: 0,
-    isRateLimitReached: false,
-    onClose,
-    onResetComplete: () => {},
+// Official app-server 8576 rejects this extension with -32600 "unknown
+// variant", while other versions use -32601. An exact unsupported method is
+// different from a router that is configured but temporarily unreachable.
+function codexMuxUnsupportedRouting(failure) {
+  const method = "personalWork/routing/read";
+  return [failure, failure?.error, failure?.cause, failure?.cause?.error].some((item) => {
+    const message = typeof item?.message === "string" ? item.message : "";
+    if (!message.toLowerCase().includes(method.toLowerCase())) return false;
+    return /\bunknown (?:variant|method)\s*[:=]?\s*[`'"]?personalWork\/routing\/read(?:[`'"]|[\s,.:]|$)/i.test(message)
+      || ((item.code == null || item.code === -32601) && /\bmethod not found\b/i.test(message));
   });
 }
 
-function CodexMuxUseResetAccountState() {
-  const cachedAccounts = (globalThis.__codexMuxConnectedAccounts || []).filter(
-    (account) => account.connected && account.enabled,
-  );
-  const [accounts, setAccounts] = kXc.useState(cachedAccounts);
-  const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [resetCounts, setResetCounts] = kXc.useState({});
-  const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
-
-  const loadAccounts = kXc.useCallback(async () => {
-    const result = await codexMuxRequest("/accounts");
-    const connected = (result.accounts || []).filter(
-      (account) => account.connected && account.enabled,
-    );
-    setAccounts(connected);
-    setSelectedId((current) =>
-      connected.some((account) => account.id === current)
-        ? current
-        : connected[0]?.id || "primary",
-    );
-    setLoading(false);
-    const entries = await Promise.all(
-      connected.map(async (account) => {
-        try {
-          const resets = await codexMuxRateLimitResets(account.id);
-          return [account.id, Math.max(0, resets.available_count || 0)];
-        } catch {
-          return [account.id, null];
-        }
-      }),
-    );
-    setResetCounts(Object.fromEntries(entries));
-  }, []);
-
+function useCodexMuxRouting({ threadId, projectKey, hostId, request } = {}) {
+  const [routing, setRouting] = kXc.useState(null);
+  const [accounts, setAccounts] = kXc.useState([]);
+  const [error, setError] = kXc.useState("");
+  const generation = kXc.useRef(0);
+  const refresh = kXc.useCallback(async () => {
+    const current = ++generation.current;
+    try {
+      const [state, accountResult] = await Promise.all([
+        codexMuxRoutingRequest("personalWork/routing/read", { threadId, projectKey, hostId }, request),
+        // Host RPC routing results may include accounts. Local accounts are
+        // fetched only for a local selector, never presented as remote logins.
+        !request && (!hostId || hostId === "local")
+          ? codexMuxRequest("/accounts")
+          : Promise.resolve({ accounts: [] }),
+      ]);
+      if (current !== generation.current) return;
+      setRouting(state);
+      setAccounts(state.accounts || accountResult.accounts || []);
+      setError("");
+      return state;
+    } catch (failure) {
+      if (current !== generation.current) return;
+      if (hostId && hostId !== "local" && request && codexMuxUnsupportedRouting(failure)) {
+        setRouting({ hostId, unsupported: true });
+        setAccounts([]);
+        setError("");
+      } else {
+        setRouting(null);
+        setError(failure.message || "Account settings are unavailable.");
+      }
+    }
+  }, [threadId, projectKey, hostId, request]);
   kXc.useEffect(() => {
-    loadAccounts().catch(() => setLoading(false));
-  }, [loadAccounts]);
-
-  kXc.useEffect(
-    () => () => {
-      delete window.__codexMuxResetAccountId;
-      delete window.__codexMuxSelectedUsageWindows;
-      delete window.__codexMuxResetAccountSelector;
-    },
-    [],
-  );
-
-  const selected =
-    accounts.find((account) => account.id === selectedId) || accounts[0] || null;
-  const activeId = selected?.id || selectedId;
-  window.__codexMuxResetAccountId = activeId;
-  window.__codexMuxSelectedUsageWindows = selected
-    ? codexMuxUsageWindows(selected.rateLimits)
-    : null;
-  window.__codexMuxResetAccountSelector = (0, e7.jsx)(
-    CodexMuxResetAccountSelector,
-    {
-      accounts,
-      loading,
-      resetCounts,
-      selectedId: activeId,
-      onSelect: setSelectedId,
-    },
-  );
-
+    setRouting(null);
+    setError("");
+    refresh();
+    const changed = () => refresh();
+    window.addEventListener("codex-personal-work-changed", changed);
+    const timer = setInterval(changed, 15_000);
+    // The SSE connection belongs to this local router. Remote RPC hosts are
+    // refreshed through their own connection or on the next poll.
+    const events = !request && (!hostId || hostId === "local")
+      ? new EventSource(`${CODEX_MUX_API}/events?token=${encodeURIComponent(CODEX_MUX_TOKEN)}`)
+      : null;
+    if (events) events.onmessage = changed;
+    return () => {
+      generation.current += 1;
+      clearInterval(timer);
+      events?.close();
+      window.removeEventListener("codex-personal-work-changed", changed);
+    };
+  }, [refresh, hostId, request]);
+  return { routing, accounts, error, refresh };
 }
 
-function CodexMuxResetAccountSelector({
-  accounts,
-  loading,
-  onSelect,
-  resetCounts,
-  selectedId,
-}) {
+function CodexMuxModeButtons({ mode, disabled, onChange, label = "Workflow" }) {
+  const selectedIndex = Math.max(0, CODEX_MUX_MODES.findIndex((item) => item.id === mode));
+  return (0, e7.jsx)("div", {
+    role: "radiogroup",
+    "aria-label": label,
+    className: "flex items-center gap-1 rounded-lg bg-token-foreground/5 p-1",
+    style: { minWidth: 160, fontSize: 12, lineHeight: "16px" },
+    children: CODEX_MUX_MODES.map((item, index) => (0, e7.jsx)("button", {
+      type: "button",
+      role: "radio",
+      "aria-checked": mode === item.id,
+      "aria-label": `${item.label} · ${item.description}`,
+      tabIndex: index === selectedIndex ? 0 : -1,
+      disabled,
+      title: `${item.label} uses your ${item.role} account`,
+      className: `flex-1 rounded-md px-3 py-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border disabled:opacity-50 ${mode === item.id ? "bg-token-bg-primary text-token-text-primary shadow-sm" : "text-token-text-secondary hover:bg-token-foreground/5"}`,
+      onClick: () => onChange(item.id),
+      onKeyDown: (event) => {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (disabled) return;
+        const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+        event.currentTarget.parentElement?.querySelectorAll('[role="radio"]')[nextIndex]?.focus();
+        onChange(CODEX_MUX_MODES[nextIndex].id);
+      },
+      children: item.label,
+    }, item.id)),
+  });
+}
+
+function codexMuxSelectionDescription(routing, accounts, hostId) {
+  if (routing?.unsupported) return "Uses this host’s current account";
+  const selected = routing?.selection;
+  const accountId = selected?.accountId;
+  const account = accounts.find((item) => item.id === accountId);
+  if (!selected) return hostId && hostId !== "local" ? "Set up Personal & Work on this host" : "Loading account…";
+  if (selected.error) return selected.error;
+  if (!selected.ready) return "Connect an account in the profile menu";
+  const role = selected.mode === "intensive" ? "Work" : selected.mode === "casual" ? "Personal" : "Current account";
+  const identity = account?.email || account?.label;
+  return identity ? `${role} · ${identity}` : role;
+}
+
+// Props are explicit so the same compact control can live in the composer or
+// task details without guessing a project's host from DOM text or task IDs.
+function CodexMuxWorkflowSelector({ threadId, projectKey, hostId = "local", busy = false, request = null, compact = false } = {}) {
+  const hostRequest = kXc.useMemo(() => request || codexMuxHostRequest(hostId), [hostId, request]);
+  const { routing, accounts, error: loadError, refresh } = useCodexMuxRouting({ threadId, projectKey, hostId, request: hostRequest });
+  const [saving, setSaving] = kXc.useState(false);
+  const [error, setError] = kXc.useState("");
+  const selection = routing?.selection;
+  const mode = routing?.unsupported ? null : selection?.mode || (threadId ? null : routing?.defaultMode || "casual");
+  const running = busy || selection?.busy;
+  const label = threadId ? "This task" : projectKey ? "Project default" : "New tasks";
+  const description = codexMuxSelectionDescription(routing, accounts, hostId);
+  async function changeMode(nextMode) {
+    if (!routing || routing.unsupported || saving || running || (nextMode === mode && selection?.mode)) return;
+    setSaving(true);
+    setError("");
+    try {
+      await codexMuxRoutingRequest("personalWork/mode/set", { threadId, projectKey, hostId, mode: nextMode }, hostRequest);
+      await refresh();
+      codexMuxBroadcastChange();
+    } catch (failure) {
+      setError(failure.message || "The workflow could not be changed.");
+    } finally {
+      setSaving(false);
+    }
+  }
   return (0, e7.jsxs)("div", {
-    className: "pt-4",
+    "data-codex-personal-work": "workflow",
+    className: compact ? "flex min-w-0 items-center gap-2" : "space-y-2 py-1",
+    style: { maxWidth: compact ? 340 : undefined },
     children: [
-      (0, e7.jsx)("div", {
-        className:
-          "mb-2 px-1 text-xs font-medium text-token-text-secondary",
-        children: "Subscription",
+      (0, e7.jsxs)("div", {
+        className: compact ? "min-w-0" : "flex min-w-0 items-center justify-between gap-3",
+        children: [
+          !compact ? (0, e7.jsx)("span", { className: "text-xs text-token-text-secondary", children: label }) : null,
+          (0, e7.jsx)(CodexMuxModeButtons, { mode, disabled: saving || running || !routing || routing.unsupported, onChange: changeMode, label: `${label} workflow` }),
+        ],
       }),
-      (0, e7.jsx)("div", {
-        className:
-          "flex flex-wrap gap-2 rounded-2xl border border-token-border p-2",
-        children: loading
-          ? (0, e7.jsx)("div", {
-              className: "px-2 py-2 text-sm text-token-text-secondary",
-              children: "Loading subscriptions…",
-            })
-          : accounts.map((account) => {
-              const selected = account.id === selectedId;
-              const count = resetCounts[account.id];
-              const short = codexMuxFiveHourWindow(account.rateLimits);
-              const weekly = codexMuxWeeklyWindow(account.rateLimits);
-              const remaining =
-                short == null ? null : Math.max(0, 100 - short.usedPercent);
-              const weeklyRemaining =
-                weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
-              const resetTime = codexMuxFormatResetTime(short?.resetsAt);
-              const weeklyResetTime = codexMuxFormatResetTime(weekly?.resetsAt);
-              return (0, e7.jsxs)(
-                "button",
-                {
-                  type: "button",
-                  className: [
-                    "flex min-w-fit items-center gap-2 rounded-xl px-3 py-2 text-left",
-                    "transition-colors hover:bg-token-foreground/5",
-                    selected
-                      ? "bg-token-foreground/10 text-token-text-primary"
-                      : "text-token-text-secondary",
-                  ].join(" "),
-                  "aria-pressed": selected,
-                  onClick: () => onSelect(account.id),
-                  children: [
-                    (0, e7.jsx)(CodexMuxAccountAvatar, {
-                      imageUrl: account.profileImageUrl,
-                      label: account.label,
-                      className: "size-7",
-                    }),
-                    (0, e7.jsxs)("span", {
-                      className: "flex min-w-0 flex-col",
-                      children: [
-                        (0, e7.jsx)("span", {
-                          className: "max-w-40 truncate text-sm font-medium",
-                          children: account.planLabel
-                            ? `${account.label} · ${account.planLabel}`
-                            : account.label,
-                        }),
-                        (0, e7.jsxs)("span", {
-                          className: "text-xs text-token-text-tertiary",
-                          children: [
-                            remaining == null ? "5h unavailable" : `${Math.round(remaining)}% of 5h remaining`,
-                            resetTime ? ` · resets ${resetTime}` : "",
-                          ],
-                        }),
-                        (0, e7.jsxs)("span", {
-                          className: "text-xs text-token-text-tertiary",
-                          children: [
-                            weeklyRemaining == null ? "Weekly unavailable" : `${Math.round(weeklyRemaining)}% weekly remaining`,
-                            weeklyResetTime ? ` · resets ${weeklyResetTime}` : "",
-                          ],
-                        }),
-                        (0, e7.jsx)("span", {
-                          className: "text-xs text-token-text-tertiary",
-                          children:
-                            count == null
-                              ? "Limit resets unavailable"
-                              : count === 1
-                                ? "1 manual reset available"
-                                : `${count} manual resets available`,
-                        }),
-                      ],
-                    }),
-                  ],
-                },
-                account.id,
-              );
-            }),
+      (0, e7.jsxs)("div", {
+        className: "min-w-0 text-xs text-token-text-secondary",
+        style: { lineHeight: "16px" },
+        children: [
+          (0, e7.jsx)("div", {
+            role: "status",
+            "aria-live": "polite",
+            className: "truncate",
+            title: error || loadError || description,
+            children: error || loadError || (saving ? "Updating workflow…" : running ? `${description} · Task running` : description),
+          }),
+          !compact && hostId !== "local" ? (0, e7.jsx)("div", { className: "mt-1 truncate text-token-text-tertiary", children: `Host: ${hostId}` }) : null,
+          !compact && projectKey && !threadId ? (0, e7.jsx)("div", { className: "mt-1 text-token-text-tertiary", children: "Used for new tasks in this project." }) : null,
+          !compact && threadId && selection?.source === "project" ? (0, e7.jsx)("div", { className: "mt-1 text-token-text-tertiary", children: "Using the project default." }) : null,
+        ],
       }),
     ],
   });
 }
 
 function CodexMuxAccountMenu() {
-  const modalScope = Lo(Q);
-  const [accounts, setAccounts] = kXc.useState([]);
-  const [loading, setLoading] = kXc.useState(true);
+  const { routing, accounts, error: loadError, refresh } = useCodexMuxRouting();
   const [busy, setBusy] = kXc.useState(false);
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
   const [codeCopied, setCodeCopied] = kXc.useState(false);
-  const loginAccountId = login?.accountId || null;
+  const roles = routing?.roleAccounts || {};
+  const prefix = kXc.useId();
+  const connected = accounts.filter((account) => account.connected && account.enabled);
+  const missingRole = ["personal", "work"].find((role) => !connected.some((account) => account.id === roles[role]));
 
-  const refresh = kXc.useCallback(async () => {
-    try {
-      const result = await codexMuxRequest("/accounts");
-      const nextAccounts = result.accounts || [];
-      globalThis.__codexMuxConnectedAccounts = nextAccounts.filter(
-        (account) => account.connected && account.enabled,
-      );
-      setAccounts(nextAccounts);
-      setError("");
-      if (nextAccounts.some((account) => account.connected)) setLoading(false);
-    } catch (requestError) {
-      setError(requestError.message);
-      setLoading(false);
-    }
-  }, []);
-
-  kXc.useEffect(() => {
-    refresh();
-    const events = new EventSource(
-      `${CODEX_MUX_API}/events?token=${encodeURIComponent(CODEX_MUX_TOKEN)}`,
-    );
-    events.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (
-          payload.type === "account-updated" &&
-          payload.accountId === loginAccountId
-        ) {
-          codexMuxLoginActive = false;
-          setLogin(null);
-        }
-        if (payload.type === "account-updated") refresh();
-      } catch {}
-    };
-    const warmupTimer = setTimeout(refresh, 2_000);
-    const loadingDeadline = setTimeout(() => {
-      refresh().finally(() => setLoading(false));
-    }, 6_000);
-    const timer = setInterval(refresh, 30_000);
-    return () => {
-      clearTimeout(warmupTimer);
-      clearTimeout(loadingDeadline);
-      clearInterval(timer);
-      events.close();
-    };
-  }, [refresh, loginAccountId]);
-
-  kXc.useEffect(() => {
-    if (!login) return;
-    const allowEscapeDismissal = (event) => {
-      if (event.key !== "Escape") return;
-      codexMuxLoginActive = false;
-      setLogin(null);
-    };
-    window.addEventListener("keydown", allowEscapeDismissal, true);
-    return () => window.removeEventListener("keydown", allowEscapeDismissal, true);
-  }, [login]);
-
-  const connected = accounts.filter(
-    (account) => account.connected && account.enabled,
-  );
-  const weeklyWindows = connected.map((account) =>
-    codexMuxWeeklyWindow(account.rateLimits),
-  );
-  const hasCompleteUsage =
-    connected.length > 0 && weeklyWindows.every((weekly) => weekly != null);
-  const totalRemaining = weeklyWindows.reduce(
-    (total, weekly) =>
-      total + (weekly == null ? 0 : Math.max(0, 100 - weekly.usedPercent)),
-    0,
-  );
-
-  async function addSubscription(event) {
-    event.preventDefault();
-    if (busy) return;
+  async function assignRole(role, accountId) {
     setBusy(true);
     setError("");
     try {
-      const created = await codexMuxRequest("/accounts", {
-        method: "POST",
-        body: JSON.stringify({ label: `Subscription ${connected.length + 1}` }),
-      });
-      const result = await codexMuxRequest(`/accounts/${created.account.id}/login`, {
-        method: "POST",
-        body: JSON.stringify({ mode: "chatgptDeviceCode" }),
-      });
-      const pendingLogin = result.login
-        ? { ...result.login, accountId: created.account.id }
-        : null;
-      codexMuxLoginActive = pendingLogin != null;
-      setCodeCopied(false);
-      setLogin(pendingLogin);
+      await codexMuxRoutingRequest("personalWork/routing/update", { roleAccounts: { ...roles, [role]: accountId || null } });
       await refresh();
-    } catch (requestError) {
-      setError(requestError.message);
+      codexMuxBroadcastChange();
+    } catch (failure) {
+      setError(failure.message);
     } finally {
       setBusy(false);
     }
   }
 
-  async function copyCodeAndContinue(event) {
+  kXc.useEffect(() => {
+    if (!login) return;
+    const account = accounts.find((item) => item.id === login.accountId && item.connected);
+    if (account) {
+      codexMuxLoginActive = false;
+      const role = login.role;
+      setLogin(null);
+      if (role) assignRole(role, account.id);
+    }
+  }, [accounts, login]);
+  kXc.useEffect(() => {
+    const dismiss = (event) => {
+      if (event.key !== "Escape" || !login) return;
+      codexMuxLoginActive = false;
+      setLogin(null);
+    };
+    window.addEventListener("keydown", dismiss, true);
+    return () => {
+      window.removeEventListener("keydown", dismiss, true);
+      codexMuxLoginActive = false;
+    };
+  }, [login]);
+
+  async function connectAccount(role, event) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const label = role === "personal" ? "Personal" : role === "work" ? "Work" : "Account";
+      const pending = accounts.find((item) => !item.connected && item.id === roles[role]) || accounts.find((item) => !item.connected && item.label === label);
+      const created = pending ? { account: pending } : await codexMuxRequest("/accounts", { method: "POST", body: JSON.stringify({ label }) });
+      const result = await codexMuxRequest(`/accounts/${encodeURIComponent(created.account.id)}/login`, { method: "POST", body: JSON.stringify({ mode: "chatgptDeviceCode" }) });
+      if (!result.login) throw new Error("Sign-in did not start. Try again.");
+      codexMuxLoginActive = true;
+      setCodeCopied(false);
+      setLogin({ ...result.login, accountId: created.account.id, role });
+      await refresh();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueLogin(event) {
     event.preventDefault();
     const userCode = login?.userCode || "";
-    const verificationUrl = login?.verificationUrl || login?.authUrl || "";
-    const copy = userCode
-      ? navigator.clipboard.writeText(userCode)
-      : Promise.resolve();
-    if (verificationUrl) {
-      try {
-        const destination = new URL(verificationUrl);
-        const trustedHost =
-          destination.hostname === "chatgpt.com" ||
-          destination.hostname === "auth.openai.com";
-        if (destination.protocol !== "https:" || !trustedHost) {
-          throw new Error("untrusted verification URL");
-        }
-        window.open(destination.href, "_blank", "noopener,noreferrer");
-      } catch {
-        setError("The sign-in verification page could not be opened safely.");
-      }
-    }
     try {
+      const destination = new URL(login?.verificationUrl || login?.authUrl || "");
+      if (destination.protocol !== "https:" || !["chatgpt.com", "auth.openai.com"].includes(destination.hostname)) throw new Error("The sign-in page is not recognized.");
+      // Start clipboard access while the click still has user activation.
+      const copy = userCode ? navigator.clipboard.writeText(userCode) : Promise.resolve();
+      window.open(destination.href, "_blank", "noopener,noreferrer");
       await copy;
-      setCodeCopied(userCode !== "");
-    } catch {
-      setError("The sign-in code could not be copied.");
+      setCodeCopied(Boolean(userCode));
+    } catch (failure) {
+      setError(failure.message || "The sign-in page could not be opened.");
     }
   }
 
-  const rows = [];
-  rows.push(
-    (0, e7.jsx)(
-      _H,
-      {
-        LeftIcon: S2,
-        SubText: loading
-          ? "Connecting subscriptions…"
-          : connected.length === 1
-            ? "1 connected subscription"
-            : `${connected.length} connected subscriptions`,
-        rightIcon: (0, e7.jsx)("span", {
-          className: "text-token-description-foreground tabular-nums",
-          children: loading
-            ? "…"
-            : hasCompleteUsage
-              ? `${Math.round(totalRemaining)}%`
-              : "–",
-        }),
-        onSelect: () => BW(modalScope, CodexMuxUsageModal, {}),
-        children: "Usage remaining",
-      },
-      "codex-mux-total",
-    ),
-  );
-  if (connected.length > 0) {
-    rows.push(
-      (0, e7.jsx)(CH.Separator, {}, "codex-mux-accounts-separator"),
-    );
-  }
-
-  for (const account of connected) {
-    const short = codexMuxFiveHourWindow(account.rateLimits);
-    const weekly = codexMuxWeeklyWindow(account.rateLimits);
-    const remaining =
-      short == null ? null : Math.max(0, 100 - short.usedPercent);
-    const resetTime = codexMuxFormatResetTime(short?.resetsAt);
-    const weeklyRemaining =
-      weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
-    const weeklyResetTime = codexMuxFormatResetTime(weekly?.resetsAt);
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: (iconProps) =>
-            (0, e7.jsx)(CodexMuxAccountAvatar, {
-              ...iconProps,
-              imageUrl: account.profileImageUrl,
-              label: account.label,
-            }),
-          SubText: (0, e7.jsxs)("span", {
-            children: [
-              account.email
-                ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
-                : account.planType || "ChatGPT subscription",
-            ],
-          }),
-          className: "group",
-          rightIcon: (0, e7.jsx)("span", {
-            className: "min-w-28 text-right text-xs leading-4 text-token-description-foreground tabular-nums",
-            children: (0, e7.jsxs)("span", {
+  return (0, e7.jsxs)("div", {
+    "data-codex-personal-work": "accounts",
+    role: "group",
+    "aria-label": "Personal and work accounts",
+    className: "px-2 py-2",
+    style: { minWidth: 270, maxWidth: 340 },
+    onKeyDown: (event) => {
+      if (event.target.tagName === "SELECT" && event.key !== "Escape") event.stopPropagation();
+    },
+    children: [
+      (0, e7.jsx)("div", { className: "px-1 pb-2 text-xs font-medium text-token-text-secondary", children: "Personal & Work" }),
+      ...CODEX_MUX_MODES.map((item) => {
+        const account = accounts.find((candidate) => candidate.id === roles[item.role]);
+        const otherRole = item.role === "personal" ? "work" : "personal";
+        return (0, e7.jsxs)("div", {
+          className: "flex items-center gap-2 rounded-lg px-1 py-2",
+          children: [
+            (0, e7.jsx)(CodexMuxAccountAvatar, { label: item.role === "personal" ? "Personal" : "Work", imageUrl: account?.profileImageUrl, className: "size-7 shrink-0" }),
+            (0, e7.jsxs)("div", {
+              className: "min-w-0 flex-1",
               children: [
-                (0, e7.jsx)("span", {
-                  className: "block",
-                  children: remaining == null ? "– 5h" : `${Math.round(remaining)}% 5h`,
-                }),
-                (0, e7.jsx)("span", {
-                  className: "block text-token-text-tertiary",
-                  children: weeklyRemaining == null ? "– weekly" : `${Math.round(weeklyRemaining)}% weekly`,
-                }),
-                resetTime || weeklyResetTime
-                  ? (0, e7.jsx)("span", {
-                      className: "block max-w-36 truncate text-token-text-tertiary",
-                      title: `5h resets ${resetTime || "unknown"}; weekly resets ${weeklyResetTime || "unknown"}`,
-                      children: `5h ${resetTime || "—"} · W ${weeklyResetTime || "—"}`,
-                    })
-                  : null,
+                (0, e7.jsx)("label", { htmlFor: `${prefix}-${item.role}`, className: "block text-sm font-medium text-token-text-primary", children: item.role === "personal" ? "Personal" : "Work" }),
+                (0, e7.jsx)("div", { className: "text-xs text-token-text-tertiary", children: `${item.label}${account && !account.connected ? " · Sign in again" : ""}` }),
               ],
             }),
-          }),
-          children: account.planLabel
-            ? `${account.label} · ${account.planLabel}`
-            : account.label,
-        },
-        `codex-mux-account-${account.id}`,
-      ),
-    );
-  }
-
-  if (login) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: CodexMuxCopyIcon,
-          SubText: login.userCode
-            ? codeCopied
-              ? `Code ${login.userCode} copied`
-              : `Code ${login.userCode} · Click to copy`
-            : "Finish signing in with ChatGPT",
-          onSelect: copyCodeAndContinue,
-          children: "Continue sign-in",
-        },
-        "codex-mux-login",
-      ),
-    );
-  }
-
-  if (error) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: S2,
-          SubText: error,
-          tone: "danger",
-          allowWrap: true,
-          subTextAllowWrap: true,
-          children: "Subscription pool unavailable",
-        },
-        "codex-mux-error",
-      ),
-    );
-  }
-
-  if (!loading) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: CodexMuxPlusIcon,
-          onSelect: addSubscription,
-          children: busy ? "Adding subscription…" : "Add another subscription",
-        },
-        "codex-mux-add",
-      ),
-    );
-  }
-  rows.push((0, e7.jsx)(CH.Separator, {}, "codex-mux-separator"));
-  return (0, e7.jsx)(e7.Fragment, { children: rows });
-}
-
-function codexMuxWeeklyWindow(rateLimits) {
-  const windows = [rateLimits?.primary, rateLimits?.secondary].filter(Boolean);
-  windows.sort(
-    (left, right) =>
-      (left.windowDurationMins || 0) - (right.windowDurationMins || 0),
-  );
-  return windows.at(-1) || null;
-}
-
-function codexMuxFiveHourWindow(rateLimits) {
-  const windows = [rateLimits?.primary, rateLimits?.secondary].filter(Boolean);
-  const exact = windows.find((window) => window.windowDurationMins === 300);
-  if (exact) return exact;
-  windows.sort(
-    (left, right) =>
-      (left.windowDurationMins || 0) - (right.windowDurationMins || 0),
-  );
-  return windows.length > 1 || (windows[0]?.windowDurationMins || 0) <= 300
-    ? windows[0] || null
-    : null;
-}
-
-function codexMuxFormatResetTime(resetsAt) {
-  if (resetsAt == null) return "";
-  const date = new Date(resetsAt * 1000);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function codexMuxUsageWindows(rateLimits) {
-  return [rateLimits?.primary, rateLimits?.secondary]
-    .filter(Boolean)
-    .map((window) => ({
-      usedPercent: window.usedPercent,
-      remainingPercent: Math.max(0, 100 - window.usedPercent),
-      windowMinutes: window.windowDurationMins || 0,
-      resetsAt: window.resetsAt ?? null,
-    }));
-}
-
-function CodexMuxPlusIcon(props) {
-  return (0, e7.jsx)("svg", {
-    viewBox: "0 0 20 20",
-    fill: "none",
-    "aria-hidden": true,
-    ...props,
-    children: (0, e7.jsx)("path", {
-      d: "M10 4.25v11.5M4.25 10h11.5",
-      stroke: "currentColor",
-      strokeWidth: 1.5,
-      strokeLinecap: "round",
-    }),
-  });
-}
-
-function CodexMuxCopyIcon(props) {
-  return (0, e7.jsx)("svg", {
-    viewBox: "0 0 20 20",
-    fill: "none",
-    "aria-hidden": true,
-    ...props,
-    children: (0, e7.jsxs)(e7.Fragment, {
-      children: [
-        (0, e7.jsx)("rect", {
-          x: 6.25,
-          y: 6.25,
-          width: 9.5,
-          height: 9.5,
-          rx: 2,
-          stroke: "currentColor",
-          strokeWidth: 1.5,
-        }),
-        (0, e7.jsx)("path", {
-          d: "M13.75 6.25V6A1.75 1.75 0 0 0 12 4.25H6A1.75 1.75 0 0 0 4.25 6v6c0 .97.78 1.75 1.75 1.75h.25",
-          stroke: "currentColor",
-          strokeWidth: 1.5,
-          strokeLinecap: "round",
-        }),
-      ],
-    }),
-  });
-}
-
-function CodexMuxMaskedEmail({ email }) {
-  return (0, e7.jsxs)(e7.Fragment, {
-    children: [
-      (0, e7.jsx)("span", {
-        className: "group-hover:hidden",
-        children: "••••••••",
+            (0, e7.jsxs)("select", {
+              id: `${prefix}-${item.role}`,
+              value: roles[item.role] || "",
+              disabled: busy || !routing,
+              "aria-label": `${item.role === "personal" ? "Personal" : "Work"} account`,
+              title: account?.email || account?.label || "Choose an account",
+              className: "max-w-40 rounded-md border border-token-border bg-token-bg-primary px-2 py-1 text-xs text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border",
+              style: { fontFamily: "inherit", minWidth: 132 },
+              onChange: (event) => assignRole(item.role, event.target.value),
+              children: [
+                (0, e7.jsx)("option", { value: "", children: "Not assigned" }),
+                ...accounts.filter((candidate) => candidate.enabled || candidate.id === roles[item.role]).map((candidate) => (0, e7.jsx)("option", {
+                  value: candidate.id,
+                  disabled: candidate.id === roles[otherRole],
+                  children: candidate.email || candidate.label || candidate.id,
+                }, candidate.id)),
+              ],
+            }),
+          ],
+        }, item.id);
       }),
-      (0, e7.jsx)("span", {
-        className: "hidden group-hover:inline",
-        children: email,
+      (0, e7.jsx)("div", { className: "my-2 border-t border-token-border" }),
+      (0, e7.jsx)(CodexMuxWorkflowSelector, {}),
+      (0, e7.jsx)("div", { className: "my-2 border-t border-token-border" }),
+      login ? (0, e7.jsxs)("div", {
+        className: "space-y-2 px-1 py-1",
+        children: [
+          (0, e7.jsx)("div", { className: "text-xs text-token-text-secondary", children: `Sign in to ${login.role === "work" ? "your work" : login.role === "personal" ? "your personal" : "an"} account in your browser.` }),
+          login.userCode ? (0, e7.jsx)("div", { className: "font-mono text-sm text-token-text-primary", children: login.userCode }) : null,
+          (0, e7.jsx)("button", { type: "button", onClick: continueLogin, className: "w-full rounded-lg bg-token-foreground/5 px-3 py-2 text-left text-sm text-token-text-primary hover:bg-token-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", children: codeCopied ? "Code copied · Continue sign-in" : "Copy code and sign in" }),
+        ],
+      }) : (0, e7.jsx)("button", {
+        type: "button",
+        role: "menuitem",
+        disabled: busy || !routing,
+        onClick: (event) => connectAccount(missingRole || null, event),
+        className: "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-text-primary hover:bg-token-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border disabled:opacity-50",
+        children: busy ? "Connecting…" : missingRole ? `${roles[missingRole] ? "Sign in to" : "Connect"} ${missingRole} account…` : "Connect another account…",
       }),
+      error || loadError ? (0, e7.jsx)("div", { role: "alert", className: "px-1 pt-2 text-xs text-token-text-secondary", children: error || loadError }) : null,
+      connected.length ? (0, e7.jsx)("div", { className: "px-1 pt-2 text-xs text-token-text-tertiary", children: "Each task uses the account you choose." }) : null,
     ],
   });
 }
 
-function CodexMuxAccountAvatar({ imageUrl, label, className }) {
+function CodexMuxAccountAvatar({ imageUrl, label = "Account", className = "size-7" }) {
   const [failed, setFailed] = kXc.useState(false);
-  const resolvedImageUrl = jLa(imageUrl || null);
-  if (resolvedImageUrl && !failed) {
-    return (0, e7.jsx)("img", {
-      src: resolvedImageUrl,
-      alt: "",
-      className: `${className || "icon-sm"} rounded-full object-cover`,
-      referrerPolicy: "no-referrer",
-      onError: () => setFailed(true),
-    });
-  }
-  const initials = label
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("");
+  kXc.useEffect(() => setFailed(false), [imageUrl]);
+  if (imageUrl?.startsWith("https://") && !failed) return (0, e7.jsx)("img", {
+    src: imageUrl,
+    alt: "",
+    className: `${className} rounded-full object-cover`,
+    referrerPolicy: "no-referrer",
+    onError: () => setFailed(true),
+  });
+  const initials = label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("");
   return (0, e7.jsx)("span", {
-    className: `${className || "icon-sm"} flex items-center justify-center rounded-full bg-token-charts-purple/10 text-[9px] leading-none text-token-charts-purple`,
+    className: `${className} flex items-center justify-center rounded-full bg-token-foreground/5 text-token-text-secondary`,
+    style: { fontSize: 11, fontWeight: 500 },
     "aria-hidden": true,
     children: initials || "?",
   });
 }
 
-function CodexMuxOverlappingAvatars({ accounts, size = "size-20" }) {
-  const overlapClass = size === "size-20" ? "-ml-10" : "-ml-2";
-  return (0, e7.jsx)("div", {
-    className: "flex items-center justify-center",
-    children: accounts.map((account, index) =>
-      (0, e7.jsx)(
-        "span",
-        {
-          className: `${index === 0 ? "" : overlapClass} rounded-full border-4 border-token-bg-primary`,
-          title: account.planLabel
-            ? `${account.label} · ${account.planLabel}`
-            : account.label,
-          children: (0, e7.jsx)(CodexMuxAccountAvatar, {
-            imageUrl: account.profileImageUrl,
-            label: account.label,
-            className: size,
-          }),
-        },
-        account.id,
-      ),
-    ),
-  });
+globalThis.CodexMuxAccountAvatar = CodexMuxAccountAvatar;
+globalThis.CodexMuxWorkflowSelector = CodexMuxWorkflowSelector;
+
+// Draft choices belong to the actual composer scope, never a host-wide mutable
+// selection. A submit captures this value before asynchronous task preparation.
+const codexMuxDraftChoices = new WeakMap();
+const codexMuxDraftSnapshots = new WeakMap();
+
+function codexMuxDraftSelection(routing, accounts, mode) {
+  if (!mode) return routing?.selection || null;
+  const role = mode === "intensive" ? "work" : "personal";
+  const accountId = routing?.roleAccounts?.[role];
+  const account = accounts.find((item) => item.id === accountId);
+  const ready = Boolean(account?.enabled && account?.connected && account?.authType === "chatgpt" && !account?.error);
+  return {
+    mode, accountId, source: "draft", ready,
+    error: ready ? "" : account?.error || `Connect and assign your ${role} account to use ${mode === "intensive" ? "Intensive" : "Casual"}.`,
+  };
 }
 
-function CodexMuxProfileAvatarStack({ onSelect }) {
-  const [accounts, setAccounts] = kXc.useState(
-    globalThis.__codexMuxCombinedProfileAccounts || [],
-  );
-  const [selectedId, setSelectedId] = kXc.useState(
-    globalThis.__codexMuxSelectedProfileAccountId || null,
-  );
-  kXc.useEffect(() => {
-    let live = true;
-    codexMuxRequest("/accounts")
-      .then((result) => {
-        if (!live) return;
-        const connected = (result.accounts || []).filter(
-          (account) => account.connected && account.enabled,
-        );
-        globalThis.__codexMuxCombinedProfileAccounts = connected;
-        setAccounts(connected);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
-  kXc.useEffect(() => {
-    globalThis.__codexMuxSelectedProfileAccountId = null;
-    setSelectedId(null);
-    onSelect?.();
-    return () => {
-      globalThis.__codexMuxSelectedProfileAccountId = null;
-    };
-  }, []);
-  if (accounts.length === 0) return null;
-  const visibleAccounts = selectedId
-    ? accounts.filter((account) => account.id === selectedId)
-    : accounts;
-  return (0, e7.jsx)("div", {
-    className: "mb-4",
-    "aria-label": selectedId
-      ? "Selected subscription profile"
-      : `${accounts.length} connected subscriptions`,
-    children: (0, e7.jsx)("div", {
-      className: "flex items-center justify-center",
-      children: visibleAccounts.map((account, index) =>
-        (0, e7.jsx)(
-          "button",
-          {
-            type: "button",
-            className: `${index === 0 ? "" : "-ml-5"} rounded-full border-4 border-token-bg-primary transition-transform hover:z-10 hover:scale-105 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border`,
-            style: {
-              marginLeft: index === 0 ? 0 : -20,
-              zIndex: index,
-            },
-            "aria-label": selectedId
-              ? `Show combined profile stats`
-              : `Show ${account.label} profile stats`,
-            title: account.planLabel
-              ? `${account.label} · ${account.planLabel}`
-              : account.label,
-            onClick: () => {
-              const nextId = selectedId === account.id ? null : account.id;
-              globalThis.__codexMuxSelectedProfileAccountId = nextId;
-              setSelectedId(nextId);
-              onSelect?.();
-            },
-            children: (0, e7.jsx)(CodexMuxAccountAvatar, {
-              imageUrl: account.profileImageUrl,
-              label: account.label,
-              className: "size-20",
-            }),
-          },
-          account.id,
-        ),
-      ),
-    }),
-  });
+function codexMuxDraftMetadata(scope, hostId) {
+  const snapshot = codexMuxDraftSnapshots.get(scope);
+  if (!snapshot) return null;
+  if (snapshot.hostId !== hostId) throw new Error("The task's host changed. Choose its workflow again before sending.");
+  if (snapshot.unsupported && hostId !== "local") return null;
+  if (!snapshot.selection?.ready) throw new Error(snapshot.error || snapshot.selection?.error || "Account settings are still loading. Try sending again in a moment.");
+  return { mode: snapshot.selection.mode, hostId, ...(snapshot.projectKey ? { projectKey: snapshot.projectKey } : {}) };
 }
 
-function CodexMuxPluginScope() {
-  const [accounts, setAccounts] = kXc.useState([]);
-  const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [loading, setLoading] = kXc.useState(true);
-  const queryClient = lt();
-  kXc.useEffect(() => {
-    let live = true;
-    codexMuxRequest("/accounts")
-      .then((result) => {
-        if (!live) return;
-        setAccounts(
-          (result.accounts || []).filter(
-            (account) => account.connected && account.enabled,
-          ),
-        );
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (live) setLoading(false);
-      });
+function CodexMuxDraftWorkflowSelector({ scope, projectKey, hostId = "local", busy = false }) {
+  const request = kXc.useMemo(() => codexMuxHostRequest(hostId), [hostId]);
+  const { routing, accounts, error: loadError, refresh } = useCodexMuxRouting({ projectKey, hostId, request });
+  const [, render] = kXc.useState(0);
+  const [saving, setSaving] = kXc.useState(false);
+  const [error, setError] = kXc.useState("");
+  const contextKey = JSON.stringify([hostId, projectKey || ""]);
+  const modeOverride = codexMuxDraftChoices.get(scope)?.get(contextKey) || null;
+  const unsupported = routing?.hostId === hostId && routing.unsupported === true;
+  const current = !unsupported && routing?.hostId === hostId && (routing.selection?.projectKey || "") === (projectKey || "") ? routing : null;
+  const selection = unsupported ? null : codexMuxDraftSelection(current, accounts, modeOverride);
+  const mode = selection?.mode || null;
+  const description = loadError || codexMuxSelectionDescription({ selection, unsupported }, accounts, hostId);
+  kXc.useLayoutEffect(() => {
+    const snapshot = { hostId, projectKey, unsupported, selection: current ? selection : null, error: loadError };
+    codexMuxDraftSnapshots.set(scope, snapshot);
     return () => {
-      live = false;
+      if (codexMuxDraftSnapshots.get(scope) === snapshot) codexMuxDraftSnapshots.delete(scope);
     };
-  }, []);
+  }, [scope, hostId, projectKey, current, accounts, modeOverride, loadError, unsupported]);
 
-  kXc.useEffect(() => {
-    globalThis.__codexMuxPluginAccountId = selectedId;
-    return () => {
-      delete globalThis.__codexMuxPluginAccountId;
-    };
-  }, [selectedId]);
-
-  async function selectAccount(accountId) {
-    if (accountId === selectedId) return;
-    globalThis.__codexMuxPluginAccountId = accountId;
-    setSelectedId(accountId);
-    await queryClient.invalidateQueries({
-      predicate: (query) => {
-        const root = query.queryKey?.[0];
-        return root === "apps" || root === "plugins" || root === "mcp";
-      },
-    });
+  function chooseMode(nextMode) {
+    if (busy || saving || !current) return;
+    let choices = codexMuxDraftChoices.get(scope);
+    if (!choices) { choices = new Map(); codexMuxDraftChoices.set(scope, choices); }
+    choices.set(contextKey, nextMode);
+    codexMuxDraftSnapshots.set(scope, { hostId, projectKey, selection: codexMuxDraftSelection(current, accounts, nextMode) });
+    setError("");
+    render((value) => value + 1);
   }
-
-  const selected =
-    accounts.find((account) => account.id === selectedId) || accounts[0] || null;
-
+  async function saveProjectDefault() {
+    if (!projectKey || !modeOverride || !current || saving || busy) return;
+    setSaving(true);
+    setError("");
+    try {
+      await codexMuxRoutingRequest("personalWork/mode/set", { hostId, projectKey, mode: modeOverride }, request);
+      codexMuxDraftChoices.get(scope)?.delete(contextKey);
+      await refresh();
+      codexMuxBroadcastChange();
+    } catch (failure) {
+      setError(failure.message || "The project default could not be saved.");
+    } finally { setSaving(false); }
+  }
   return (0, e7.jsxs)("div", {
-    className:
-      "mb-5 rounded-2xl border border-token-border-light p-3",
+    "data-codex-personal-work": "draft",
+    className: "flex flex-wrap items-center justify-between gap-2 px-3 pt-2",
     children: [
+      (0, e7.jsx)(CodexMuxModeButtons, { mode, disabled: busy || saving || !current, onChange: chooseMode, label: "This task workflow" }),
       (0, e7.jsxs)("div", {
-        className: "px-1",
+        className: "min-w-0 text-right text-xs text-token-text-secondary",
+        style: { maxWidth: 240, lineHeight: "16px" },
         children: [
-          (0, e7.jsx)("div", {
-            className: "text-sm font-medium text-token-text-primary",
-            children: "Plugin connections",
-          }),
-          (0, e7.jsx)("div", {
-            className: "mt-0.5 text-xs text-token-text-secondary",
-            children: selected
-              ? `Installs are shared. Connection access below is for ${selected.label}.`
-              : "Installs are shared. Choose a subscription for connection access.",
-          }),
+          (0, e7.jsx)("div", { role: "status", "aria-live": "polite", className: "truncate", title: error || description, children: error || description }),
+          (0, e7.jsxs)("div", { className: "flex justify-end gap-2 text-token-text-tertiary", children: [
+            !unsupported && modeOverride ? (0, e7.jsx)("button", { type: "button", disabled: busy || saving, onClick: () => chooseMode(null), className: "rounded-sm hover:text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", title: "Use the default for this project or host", children: "Use default" }) : (0, e7.jsx)("span", { children: unsupported ? "Personal & Work not configured" : current?.selection?.source === "project" ? "Project default" : "Default" }),
+            !unsupported && modeOverride && projectKey ? (0, e7.jsx)("button", { type: "button", disabled: busy || saving, onClick: saveProjectDefault, className: "rounded-sm hover:text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", children: saving ? "Saving…" : "Make project default" }) : null,
+          ] }),
         ],
       }),
-      loading
-        ? (0, e7.jsx)("div", {
-            className: "mt-3 px-1 text-sm text-token-text-tertiary",
-            children: "Loading subscriptions…",
-          })
-        : (0, e7.jsx)("div", {
-            className: "mt-3 flex flex-wrap gap-2",
-            children: accounts.map((account) => {
-              const active = account.id === selected?.id;
-              return (0, e7.jsxs)(
-                "button",
-                {
-                  type: "button",
-                  className: [
-                    "flex items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors",
-                    active
-                      ? "bg-token-foreground/10 text-token-text-primary"
-                      : "text-token-text-secondary hover:bg-token-foreground/5",
-                  ].join(" "),
-                  "aria-pressed": active,
-                  onClick: () => selectAccount(account.id),
-                  children: [
-                    (0, e7.jsx)(CodexMuxAccountAvatar, {
-                      imageUrl: account.profileImageUrl,
-                      label: account.label,
-                      className: "size-7",
-                    }),
-                    (0, e7.jsx)("span", {
-                      children: account.planLabel
-                        ? `${account.label} · ${account.planLabel}`
-                        : account.label,
-                    }),
-                  ],
-                },
-                account.id,
-              );
-            }),
-          }),
     ],
   });
 }
 
-// The thread summary is emitted into a separate lazy-loaded renderer chunk.
-// Export the same avatar component so both surfaces share image resolution,
-// error handling, and the initials fallback.
-globalThis.CodexMuxAccountAvatar = CodexMuxAccountAvatar;
-globalThis.codexMuxProfileData = codexMuxProfileData;
-globalThis.CodexMuxProfileAvatarStack = (props) =>
-  (0, e7.jsx)(CodexMuxProfileAvatarStack, props || {});
-globalThis.CodexMuxPluginScope = () =>
-  (0, e7.jsx)(CodexMuxPluginScope, {});
+globalThis.CodexMuxDraftWorkflowSelector = CodexMuxDraftWorkflowSelector;
+globalThis.__codexPersonalWorkDraftMetadata = codexMuxDraftMetadata;

@@ -29,6 +29,7 @@ type persistedState struct {
 	Version     int               `json:"version"`
 	Accounts    []Account         `json:"accounts"`
 	ThreadOwner map[string]string `json:"threadOwner"`
+	Routing     RoutingSettings   `json:"routing"`
 }
 
 // Store persists routing metadata. OAuth credentials remain isolated; rollout
@@ -41,6 +42,7 @@ type Store struct {
 	primaryCodexHome string
 	accounts         []Account
 	owners           map[string]string
+	routing          RoutingSettings
 }
 
 func Open(root, primaryCodexHome string) (*Store, error) {
@@ -59,6 +61,7 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 		path:             filepath.Join(root, "state.json"),
 		primaryCodexHome: primaryCodexHome,
 		owners:           make(map[string]string),
+		routing:          defaultRouting(),
 	}
 	data, err := os.ReadFile(store.path)
 	switch {
@@ -71,6 +74,7 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 			return nil, fmt.Errorf("unsupported state version %d", persisted.Version)
 		}
 		store.accounts = persisted.Accounts
+		store.routing = normalizeRouting(persisted.Routing)
 		if persisted.ThreadOwner != nil {
 			store.owners = persisted.ThreadOwner
 		}
@@ -325,8 +329,17 @@ func (s *Store) SetThreadOwner(threadID, accountID string) error {
 	if s.owners[threadID] == accountID {
 		return nil
 	}
+	previous, existed := s.owners[threadID]
 	s.owners[threadID] = accountID
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		if existed {
+			s.owners[threadID] = previous
+		} else {
+			delete(s.owners, threadID)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Store) ThreadCounts() map[string]int {
@@ -344,6 +357,7 @@ func (s *Store) saveLocked() error {
 		Version:     stateVersion,
 		Accounts:    s.accounts,
 		ThreadOwner: s.owners,
+		Routing:     s.routing,
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {

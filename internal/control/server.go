@@ -28,6 +28,8 @@ func New(address, token string, multiplexer *mux.Multiplexer, uiTests bool) *Ser
 	router.HandleFunc("/v1/accounts", server.accounts)
 	router.HandleFunc("/v1/accounts/", server.accountAction)
 	router.HandleFunc("/v1/thread-account", server.threadAccount)
+	router.HandleFunc("/v1/routing", server.routing)
+	router.HandleFunc("/v1/thread-mode", server.threadMode)
 	router.HandleFunc("/v1/profile/combined", server.combinedProfile)
 	router.HandleFunc("/v1/events", server.events)
 	if uiTests {
@@ -42,6 +44,61 @@ func New(address, token string, multiplexer *mux.Multiplexer, uiTests bool) *Ser
 		MaxHeaderBytes:    16 * 1024,
 	}
 	return server
+}
+
+func (s *Server) routing(response http.ResponseWriter, request *http.Request) {
+	if !s.authorized(request) {
+		writeJSON(response, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
+	defer cancel()
+	var result mux.RoutingSnapshot
+	var err error
+	switch request.Method {
+	case http.MethodGet:
+		result, err = s.mux.Routing(ctx, mux.RoutingQuery{
+			ThreadID: request.URL.Query().Get("threadId"), ProjectKey: request.URL.Query().Get("projectKey"), HostID: request.URL.Query().Get("hostId"),
+		})
+	case http.MethodPost:
+		var input mux.RoutingUpdate
+		err = decodeJSON(request, &input)
+		if err == nil {
+			result, err = s.mux.UpdateRouting(ctx, input)
+		}
+	default:
+		methodNotAllowed(response)
+		return
+	}
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) threadMode(response http.ResponseWriter, request *http.Request) {
+	if !s.authorized(request) {
+		writeJSON(response, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var input mux.ModeUpdate
+	if err := decodeJSON(request, &input); err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*30*time.Second)
+	defer cancel()
+	result, err := s.mux.SetMode(ctx, input)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (s *Server) combinedProfile(response http.ResponseWriter, request *http.Request) {

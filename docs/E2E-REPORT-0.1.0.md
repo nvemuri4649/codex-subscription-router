@@ -1,5 +1,10 @@
 # v0.1.0 signed-app E2E report
 
+> Archived upstream report for 0.1.0/build 6396. These results and the quota
+> failover, combined-profile, and native-helper claims below do not apply to
+> Personal & Work 0.3.0. See [current validation](PERSONAL-WORK-VALIDATION.md).
+
+
 Tested on 15 August 2026 against source commit `ab51ae6`.
 
 | Item | Tested value |

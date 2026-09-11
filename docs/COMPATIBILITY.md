@@ -1,47 +1,54 @@
 # Compatibility
 
-The patcher is intentionally tied to known ChatGPT desktop bundle structures.
-It verifies every modified renderer, main-process, and native binary anchor and
-stops instead of applying a partial patch.
+## Source version 0.3.0
 
-## Release 0.1.0
+This is the Personal & Work source branch dated 11 September 2026. It is not a
+published 0.3.0 binary or tagged release. The current entry point is
+`scripts/build_personal_work.py`.
 
-| Component | Tested value |
+| Component | Reviewed input |
 | --- | --- |
-| Official ChatGPT version | `26.803.61601` |
-| Official bundle build | `6396` |
-| `app.asar` SHA-256 | `d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf` |
-| Architecture | Apple silicon (`arm64`) |
+| Official desktop version | `26.903.71938` |
+| Official bundle build | `8576` |
+| Source `app.asar` SHA-256 | `58fef82480b9064e209b5b2fd934992e8d71515aea8084482369cfeaff1b8ee0` |
+| Local architecture | Apple silicon (`arm64`) |
+| Generated app | `Codex Personal Work.app` |
+| Bundle identifier | `app.codexpersonalwork.desktop` |
+| Local control port | `48124` |
 
-## Release 0.2.0
+The builder rejects a different version, build, or archive hash and rejects
+missing or repeated patch anchors. It has no untested-source override. An
+upstream app update requires a deliberate review and updated compatibility
+checks; matching a version label alone is insufficient.
 
-### Build 7303
+The generated copy has passed the patch-anchor, syntax, ASAR integrity, and
+signature checks recorded in [Personal Work validation](PERSONAL-WORK-VALIDATION.md).
+That does not establish successful two-account operation. Personal login,
+native visual checks, real task transfers, cloud ChatGPT/Work identity, and
+per-account model/usage behavior remain subject to that live validation record.
+Native Computer Use and Appshots are unverified for the ad-hoc copy.
 
-| Component | Tested value |
-| --- | --- |
-| Official ChatGPT version | `26.825.32147` |
-| Official bundle build | `7303` |
-| `app.asar` SHA-256 | `0462b03e878f0e78b223b849ee14cbba0de043f2c16acebee163cb95daa622ef` |
-| Architecture | Apple silicon (`arm64`) |
+## SSH scope
 
-Build 7303 regenerates the renderer bundles and uses a dedicated, fail-closed
-set of native UI anchors. The original build 6396 patch remains supported.
+The remote installer supports Linux and macOS on x86-64 and ARM64. Its transport
+matches the current app's native WebSocket-over-SSH proxy. Host logins and
+workflow preferences are independent. Read-only transport and account-discovery
+evidence, including the tested remote CLI version, is recorded in
+[remote validation](REMOTE.md). Interactive remote switching remains a separate
+check. Remote-control/cloud-paired hosts and cloud Work sessions are not remote
+installer targets.
 
-### Build 7345
+## Historical upstream compatibility
 
-| Component | Tested value |
-| --- | --- |
-| Official ChatGPT version | `26.825.41651` |
-| Official bundle build | `7345` |
-| `app.asar` SHA-256 | `c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d` |
-| Architecture | Apple silicon (`arm64`) |
+These inputs were documented by the original project or the vrlda fork. They
+belong to the retained legacy patcher and reports, not the 0.3.0 builder:
 
-Build 7345 retains the reviewed build-7303 renderer anchors. The full patch,
-repack, signing, and signature verification flow was repeated against this
-exact ASAR.
+| Upstream source version | Official version | Build |
+| --- | --- | --- |
+| 0.1.0 | `26.803.61601` | `6396` |
+| 0.2.0 | `26.825.32147` | `7303` |
+| 0.2.0 | `26.825.41651` | `7345` |
 
-A different official version may work when all anchors remain identical, but
-it is unverified. The patcher rejects a version, build, or ASAR hash mismatch by
-default; `--allow-untested-source` is an explicit diagnostic override. Never
-weaken an anchor-count or binary-constant check merely to make a new build
-complete. Review the upstream change and update the patch deliberately.
+The [archived 0.1.0 report](E2E-REPORT-0.1.0.md) and images under `screenshots/`
+show earlier behavior, including automatic quota failover. They are not tests
+or screenshots of Personal & Work 0.3.0.

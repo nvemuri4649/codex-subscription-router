@@ -1,27 +1,31 @@
 {
-  "name": "codex-subscription-router-patcher",
+  "name": "codex-personal-work-patcher",
   "private": true,
-  "version": "0.2.0",
-  "description": "Build tooling for the independent Codex Subscription Router macOS app patch",
+  "version": "0.3.0",
+  "description": "Native-feeling personal/work account routing for Codex local and SSH tasks",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vrlda/codex-subscription-router.git"
+    "url": "git+https://github.com/nvemuri4649/codex-subscription-router.git"
   },
-  "homepage": "https://github.com/vrlda/codex-subscription-router#readme",
+  "homepage": "https://github.com/nvemuri4649/codex-subscription-router#readme",
   "bugs": {
-    "url": "https://github.com/vrlda/codex-subscription-router/issues"
+    "url": "https://github.com/nvemuri4649/codex-subscription-router/issues"
   },
   "engines": {
     "node": ">=22.12"
   },
   "scripts": {
-    "check": "npm run check:go && npm run check:js && npm run check:python && npm run check:shell",
+    "check": "npm run check:go && npm run check:js && npm run check:python && npm run check:shell && npm run check:native",
     "check:go": "go test ./... && go vet ./...",
-    "check:js": "node --check ui/account-menu.js && node --check ui/thread-subscription.js && node --check ui/ui-test-bridge.cjs",
-    "check:python": "python3 -m py_compile scripts/patch_app.py scripts/check_release.py",
+    "check:js": "node --check ui/account-menu.js && node --check ui/thread-subscription.js && node --check ui/ui-test-bridge.cjs && npm run test:js",
+    "test:js": "node --test ui/*.test.cjs",
+    "check:python": "python3 -m py_compile scripts/*.py && npm run test:python",
+    "test:python": "python3 -m unittest discover -s scripts -p \"test_*.py\"",
     "check:shell": "bash -n install.sh",
-    "release:check": "python3 scripts/check_release.py"
+    "check:native": "xcrun clang -fsyntax-only -Wall -Wextra native/launcher.c",
+    "release:check": "python3 scripts/check_release.py",
+    "check:personal-work": "npm run check"
   },
   "devDependencies": {
     "@electron/asar": "4.2.1"
