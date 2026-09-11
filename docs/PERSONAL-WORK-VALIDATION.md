@@ -16,7 +16,7 @@ Source ASAR SHA-256: `58fef82480b9064e209b5b2fd934992e8d71515aea8084482369cfeaff
 
 ## Automated checks
 
-Go unit tests and vet pass across the router, account store, control API, and remote backend. Race tests cover state, routing, control, and remote transport. All 20 UI behavior tests pass and cover per-draft state, readiness, host scope, project defaults, keyboard control, running tasks, and transport startup. Python tests verify anchor rejection, archive integrity hashing, and existing-login ownership without copying credentials.
+Go unit tests and vet pass across the router, account store, control API, and remote backend. Race tests cover state, routing, control, and remote transport. All 27 UI behavior tests pass and cover per-draft state, readiness, host scope, project defaults, keyboard control, running tasks, and transport startup. Python tests verify anchor rejection, archive integrity hashing, and existing-login ownership without copying credentials.
 
 Synthetic accounts verify explicit account dispatch, removal of private workflow metadata, preservation of existing task ownership, idle-only account changes, personal controller authentication, and unchanged native quota errors. These tests do not establish real personal-account authentication.
 
@@ -39,3 +39,9 @@ Personal ChatGPT sign-in is user-driven and has not been completed. Actual perso
 Native visual verification requires an unlocked Mac. The account menu and composer have not yet received a visual acceptance pass. Computer Use/Appshots authentication failed for the ad-hoc app copy during launch; those capabilities are not validated or repaired by this build. Existing official application permissions and vendor service authentication checks have not been changed.
 
 The copied desktop initially logged a remote bundled `sites` catalog error. The same error was reproduced through the official proxy without the router, and subsequent routed and direct reads both succeeded with identical configuration. This suggests transient native catalog readiness; no router-specific plugin regression was reproduced and no plugin configuration was changed during the comparison.
+
+## Account menu refinement
+
+The bottom-left menu now uses a compact account summary, an exclusive Manage view, and an exclusive sign-in view. Fixed minimum panel/control widths were removed; account identities shrink within the native menu width. Sign-in uses a selectable read-only code field and an explicit Copy action through the native Electron clipboard bridge. Opening the browser is a separate action.
+
+All 27 UI tests pass, including asynchronous copy feedback, clipboard failure, preserved keyboard selection, separate browser opening, and account assignment through Manage. The rebuilt app passes source-anchor, syntax, and signature checks. Live UI automation disconnected during the copied app restart, so the post-change visual overflow check and actual clipboard click remain pending.

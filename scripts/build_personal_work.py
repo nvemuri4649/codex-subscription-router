@@ -58,8 +58,13 @@ function CodexPersonalWorkBootstrap(){
   Obn.useEffect(()=>{
     const request=(hostId,method,params)=>qT(store,hostId).sendRequest(method,params);
     globalThis.__codexPersonalWorkRequest=request;
+    const copyText=(text)=>Dw.clipboard.writeText(text);
+    globalThis.__codexPersonalWorkCopyText=copyText;
     globalThis.dispatchEvent(new Event("codex-personal-work-changed"));
-    return ()=>{if(globalThis.__codexPersonalWorkRequest===request)delete globalThis.__codexPersonalWorkRequest;};
+    return ()=>{
+      if(globalThis.__codexPersonalWorkRequest===request)delete globalThis.__codexPersonalWorkRequest;
+      if(globalThis.__codexPersonalWorkCopyText===copyText)delete globalThis.__codexPersonalWorkCopyText;
+    };
   },[store]);
   return null;
 }

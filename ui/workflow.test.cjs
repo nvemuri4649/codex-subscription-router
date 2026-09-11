@@ -96,14 +96,16 @@ test('running tasks disable changes even if their callback is invoked', async ()
   assert.equal(f.calls.length, 0);
 });
 
-test('profile account selectors prevent assigning one account to both roles', () => {
+test('account assignments prevent sharing a role and send the selected account ID', () => {
   const f = fixture();
-  f.run('useCodexMuxRouting=()=>({routing:{defaultMode:"casual",roleAccounts:{personal:null,work:"work"}},accounts:[{id:"work",label:"Trajectory",email:"work@example.test",connected:true,enabled:true}],error:"",refresh:async()=>{}})');
-  const tree = f.run('CodexMuxAccountMenu()');
+  const assigned = [];
+  f.context.onAssign = (role, accountId) => assigned.push({ role, accountId });
+  const tree = f.run('CodexMuxAccountAssignments({accounts:[{id:"work",label:"Trajectory",email:"work@example.test",enabled:true},{id:"personal",email:"personal@example.test",enabled:true}],roles:{personal:null,work:"work"},busy:false,prefix:"test",onAssign})');
   const personal = descend(tree, (node) => node.type === 'select' && node.props['aria-label'] === 'Personal account');
   assert.equal(personal.props.children[1].props.disabled, true);
-  const connect = descend(tree, (node) => node.type === 'button' && node.props.role === 'menuitem');
-  assert.equal(connect.props.children, 'Connect personal account…');
+  assert.equal(personal.props.children[2].props.disabled, false);
+  personal.props.onChange({ target: { value: 'personal' } });
+  assert.deepEqual(assigned, [{ role: 'personal', accountId: 'personal' }]);
 });
 
 function draftFixture({ personalReady = true } = {}) {
@@ -256,4 +258,162 @@ test('existing tasks on unconfigured hosts show their native account with no mod
   assert.ok(descend(tree, (node) => node.props?.children === 'Uses this host’s current account'));
   await radios.props.onChange('intensive');
   assert.equal(f.calls.length, 0);
+});
+
+const LOGIN_CODE = 'TEST-4821';
+const LOGIN_URL = 'https://auth.openai.com/codex/device';
+function menuEvent() {
+  return {
+    defaultPrevented: false, propagationStopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+  };
+}
+
+function menuFixture({ verificationUrl = LOGIN_URL, workEmail = 'work@example.test' } = {}) {
+  const f = fixture();
+  const states = [];
+  const opened = [];
+  let cursor = 0;
+  f.context.kXc.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial;
+    return [states[index], (value) => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
+  };
+  f.context.window.open = (...args) => opened.push(args);
+  f.context.workEmail = workEmail;
+  f.context.fetch = async (url, options) => {
+    f.calls.push({ url, options });
+    const body = url.endsWith('/login')
+      ? { login: { userCode: LOGIN_CODE, verificationUrl } }
+      : { account: { id: 'pending-personal', label: 'Personal' } };
+    return { ok: true, json: async () => body };
+  };
+  f.run('useCodexMuxRouting=()=>({routing:{defaultMode:"casual",roleAccounts:{personal:null,work:"work"}},accounts:[{id:"work",label:"Trajectory",email:workEmail,connected:true,enabled:true}],error:"",refresh:async()=>{}})');
+  const render = () => { cursor = 0; return f.run('CodexMuxAccountMenu()'); };
+  const signIn = async () => {
+    const connect = descend(render(), (node) => node.type === 'button' && node.props['aria-label'] === 'Connect Personal account');
+    assert.ok(connect, 'personal onboarding must be reachable from the compact menu');
+    const event = menuEvent();
+    await connect.props.onClick(event);
+    assert.equal(event.defaultPrevented, true);
+    return render();
+  };
+  return { ...f, render, signIn, opened };
+}
+
+test('copy uses the native clipboard and reports success only after it resolves', async () => {
+  const f = menuFixture();
+  const copied = [];
+  const browserCopies = [];
+  let resolveCopy;
+  f.context.__codexPersonalWorkCopyText = (value) => {
+    copied.push(value);
+    return new Promise((resolve) => { resolveCopy = resolve; });
+  };
+  f.context.navigator = { clipboard: { writeText: async (value) => browserCopies.push(value) } };
+  const tree = await f.signIn();
+  const copy = descend(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Copy sign-in code');
+  const event = menuEvent();
+  const pending = copy.props.onClick(event);
+  assert.equal(event.defaultPrevented, true, 'copy must not dismiss the surrounding menu');
+  assert.equal(event.propagationStopped, true);
+  assert.deepEqual(copied, [LOGIN_CODE]);
+  assert.deepEqual(browserCopies, [], 'native clipboard has priority');
+  assert.equal(descend(f.render(), (node) => node.props?.children === 'Code copied to clipboard'), null);
+  assert.equal(f.opened.length, 0, 'copy must not open a browser or lose focus');
+  resolveCopy();
+  await pending;
+  assert.ok(descend(f.render(), (node) => node.props?.children === 'Code copied to clipboard'));
+});
+
+test('clipboard failure keeps the code available and does not claim it was copied', async () => {
+  const f = menuFixture();
+  let fail = false;
+  f.context.__codexPersonalWorkCopyText = async () => { if (fail) throw new Error('Native clipboard unavailable'); };
+  const tree = await f.signIn();
+  await descend(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Copy sign-in code').props.onClick(menuEvent());
+  assert.ok(descend(f.render(), (node) => node.props?.children === 'Code copied to clipboard'));
+  fail = true;
+  await descend(f.render(), (node) => node.type === 'button' && node.props['aria-label'] === 'Copy sign-in code').props.onClick(menuEvent());
+  const result = f.render();
+  assert.equal(descend(result, (node) => node.props?.children === 'Code copied to clipboard'), null);
+  assert.ok(descend(result, (node) => node.props.role === 'alert' && node.props.children === 'Select the code and press ⌘C to copy it.'));
+  assert.equal(descend(result, (node) => node.type === 'input').props.value, LOGIN_CODE);
+  assert.equal(f.opened.length, 0);
+});
+
+test('web clipboard is used only when the native bridge is absent', async () => {
+  const copied = [];
+  const f = fixture({ navigator: { clipboard: { writeText: async (value) => copied.push(value) } } });
+  f.context.testCode = LOGIN_CODE;
+  await f.run('codexMuxCopyText(testCode)');
+  assert.deepEqual(copied, [LOGIN_CODE]);
+  delete f.context.navigator;
+  await assert.rejects(() => f.run('codexMuxCopyText(testCode)'), /Select the code and press/);
+});
+
+test('opening sign-in is separate from copying and never adds the code to the URL', async () => {
+  const f = menuFixture();
+  const copied = [];
+  f.context.__codexPersonalWorkCopyText = async (value) => copied.push(value);
+  const tree = await f.signIn();
+  descend(tree, (node) => node.type === 'button' && node.props.children === 'Open sign-in page ↗').props.onClick(menuEvent());
+  assert.deepEqual(copied, []);
+  assert.deepEqual(f.opened, [[LOGIN_URL, '_blank', 'noopener,noreferrer']]);
+  assert.equal(f.opened[0][0].includes(LOGIN_CODE), false);
+  assert.equal(new URL(f.opened[0][0]).search, '');
+});
+
+test('a sign-in page outside the expected HTTPS hosts is rejected without copying', async () => {
+  for (const verificationUrl of ['https://auth.openai.com.example.test/device', 'http://auth.openai.com/device']) {
+    const f = menuFixture({ verificationUrl });
+    const tree = await f.signIn();
+    descend(tree, (node) => node.type === 'button' && node.props.children === 'Open sign-in page ↗').props.onClick(menuEvent());
+    assert.equal(f.opened.length, 0);
+    assert.ok(descend(f.render(), (node) => node.props?.role === 'alert'));
+  }
+});
+
+test('login code is read-only, selectable, and has an accessible independent copy action', async () => {
+  const f = menuFixture();
+  const tree = await f.signIn();
+  const input = descend(tree, (node) => node.type === 'input' && node.props['aria-label'] === 'Sign-in code');
+  assert.equal(input.props.readOnly, true);
+  assert.equal(input.props.value, LOGIN_CODE);
+  assert.equal(input.props.style.userSelect, 'text');
+  assert.equal(input.props.style.WebkitUserSelect, 'text');
+  let selected = 0;
+  const event = { currentTarget: { select: () => selected++ } };
+  input.props.onFocus(event);
+  input.props.onClick(event);
+  assert.equal(selected, 2, 'both keyboard focus and clicking should select the entire code');
+  assert.ok(descend(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Copy sign-in code'));
+  assert.equal(descend(tree, (node) => node.type === 'select'), null, 'login should replace the settings panel');
+  const keyboard = { key: 'c', metaKey: true, ...menuEvent() };
+  tree.props.onKeyDown(keyboard);
+  assert.equal(keyboard.propagationStopped, true);
+  assert.equal(keyboard.defaultPrevented, false, 'Cmd+C must retain native browser copying');
+});
+
+test('long account identities stay inspectable while summary and assignment controls can shrink', () => {
+  const workEmail = `${'long.account.'.repeat(18)}example@trajectory.example.test`;
+  const f = menuFixture({ workEmail });
+  const summary = f.render();
+  const identity = descend(summary, (node) => node.props?.title === workEmail);
+  assert.equal(identity.props.children, workEmail, 'the full identity remains available to assistive tools and hover');
+  assert.equal(summary.props.style.minWidth, 0);
+  assert.equal(summary.props.style.maxWidth, '100%');
+  assert.match(identity.props.className, /truncate/);
+  descend(summary, (node) => node.type === 'button' && node.props.children === 'Manage').props.onClick(menuEvent());
+  const managing = f.render();
+  const assignments = descend(managing, (node) => node.type?.name === 'CodexMuxAccountAssignments');
+  assert.ok(assignments);
+  assert.equal(descend(managing, (node) => node.props?.title === workEmail), null, 'expanded settings replace summary rows');
+  const fields = assignments.type(assignments.props);
+  const work = descend(fields, (node) => node.type === 'select' && node.props['aria-label'] === 'Work account');
+  assert.equal(work.props.style.minWidth, 0);
+  assert.equal(work.props.style.maxWidth, '100%');
+  assert.equal(work.props.children[1].props.children, workEmail);
+  assert.equal(work.props.children[1].props.value, 'work');
 });

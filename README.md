@@ -8,7 +8,7 @@ This is an unofficial, source-only fork of [Codex Subscription Router](https://g
 
 ## What changes
 
-- The existing profile menu contains Personal and Work account assignments and account sign-in.
+- The existing profile menu has compact Personal and Work rows, with account assignments under Manage. Sign-in codes are selectable and have a separate native Copy action.
 - A compact Casual/Intensive selector lets you choose a workflow before starting a task.
 - An idle task's Workflow section lets you change its account explicitly.
 - Projects can remember a default workflow, scoped to the execution host.

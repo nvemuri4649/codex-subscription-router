@@ -225,16 +225,57 @@ function CodexMuxWorkflowSelector({ threadId, projectKey, hostId = "local", busy
   });
 }
 
+async function codexMuxCopyText(text) {
+  if (typeof globalThis.__codexPersonalWorkCopyText === "function") {
+    await globalThis.__codexPersonalWorkCopyText(text);
+    return;
+  }
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  throw new Error("Select the code and press ⌘C to copy it.");
+}
+
+function CodexMuxAccountAssignments({ accounts, roles, busy, prefix, onAssign }) {
+  return (0, e7.jsx)("div", {
+    style: { display: "grid", gap: 10, minWidth: 0 },
+    children: CODEX_MUX_MODES.map((item) => {
+      const otherRole = item.role === "personal" ? "work" : "personal";
+      const label = item.role === "personal" ? "Personal" : "Work";
+      return (0, e7.jsxs)("div", {
+        style: { minWidth: 0 },
+        children: [
+          (0, e7.jsx)("label", { htmlFor: `${prefix}-${item.role}`, className: "text-xs text-token-text-secondary", style: { display: "block", marginBottom: 4 }, children: `${label} · ${item.label}` }),
+          (0, e7.jsxs)("select", {
+            id: `${prefix}-${item.role}`, value: roles[item.role] || "", disabled: busy,
+            "aria-label": `${label} account`,
+            className: "rounded-md border border-token-border bg-token-bg-primary text-xs text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border",
+            style: { boxSizing: "border-box", width: "100%", maxWidth: "100%", minWidth: 0, padding: "6px 8px", fontFamily: "inherit" },
+            onChange: (event) => onAssign(item.role, event.target.value),
+            children: [
+              (0, e7.jsx)("option", { value: "", children: "Not connected" }),
+              ...accounts.filter((candidate) => candidate.enabled || candidate.id === roles[item.role]).map((candidate) => (0, e7.jsx)("option", {
+                value: candidate.id, disabled: candidate.id === roles[otherRole], children: candidate.email || candidate.label || candidate.id,
+              }, candidate.id)),
+            ],
+          }),
+        ],
+      }, item.id);
+    }),
+  });
+}
+
 function CodexMuxAccountMenu() {
   const { routing, accounts, error: loadError, refresh } = useCodexMuxRouting();
   const [busy, setBusy] = kXc.useState(false);
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
   const [codeCopied, setCodeCopied] = kXc.useState(false);
+  const [managing, setManaging] = kXc.useState(false);
   const roles = routing?.roleAccounts || {};
   const prefix = kXc.useId();
-  const connected = accounts.filter((account) => account.connected && account.enabled);
-  const missingRole = ["personal", "work"].find((role) => !connected.some((account) => account.id === roles[role]));
+  const actionClass = "rounded-md text-xs text-token-text-secondary hover:bg-token-foreground/5 hover:text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border disabled:opacity-50";
 
   async function assignRole(role, accountId) {
     setBusy(true);
@@ -243,11 +284,8 @@ function CodexMuxAccountMenu() {
       await codexMuxRoutingRequest("personalWork/routing/update", { roleAccounts: { ...roles, [role]: accountId || null } });
       await refresh();
       codexMuxBroadcastChange();
-    } catch (failure) {
-      setError(failure.message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (failure) { setError(failure.message); }
+    finally { setBusy(false); }
   }
 
   kXc.useEffect(() => {
@@ -260,6 +298,11 @@ function CodexMuxAccountMenu() {
       if (role) assignRole(role, account.id);
     }
   }, [accounts, login]);
+  kXc.useEffect(() => {
+    if (!codeCopied) return;
+    const timer = setTimeout(() => setCodeCopied(false), 2500);
+    return () => clearTimeout(timer);
+  }, [codeCopied]);
   kXc.useEffect(() => {
     const dismiss = (event) => {
       if (event.key !== "Escape" || !login) return;
@@ -275,6 +318,7 @@ function CodexMuxAccountMenu() {
 
   async function connectAccount(role, event) {
     event.preventDefault();
+    event.stopPropagation();
     if (busy) return;
     setBusy(true);
     setError("");
@@ -286,97 +330,131 @@ function CodexMuxAccountMenu() {
       if (!result.login) throw new Error("Sign-in did not start. Try again.");
       codexMuxLoginActive = true;
       setCodeCopied(false);
+      setManaging(false);
       setLogin({ ...result.login, accountId: created.account.id, role });
       await refresh();
-    } catch (failure) {
-      setError(failure.message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (failure) { setError(failure.message); }
+    finally { setBusy(false); }
   }
 
-  async function continueLogin(event) {
+  async function copyLoginCode(event) {
     event.preventDefault();
-    const userCode = login?.userCode || "";
+    event.stopPropagation();
+    setCodeCopied(false);
+    setError("");
+    try {
+      await codexMuxCopyText(login.userCode);
+      setCodeCopied(true);
+    } catch (failure) { setError("Select the code and press ⌘C to copy it."); }
+  }
+
+  function continueLogin(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setError("");
     try {
       const destination = new URL(login?.verificationUrl || login?.authUrl || "");
       if (destination.protocol !== "https:" || !["chatgpt.com", "auth.openai.com"].includes(destination.hostname)) throw new Error("The sign-in page is not recognized.");
-      // Start clipboard access while the click still has user activation.
-      const copy = userCode ? navigator.clipboard.writeText(userCode) : Promise.resolve();
       window.open(destination.href, "_blank", "noopener,noreferrer");
-      await copy;
-      setCodeCopied(Boolean(userCode));
-    } catch (failure) {
-      setError(failure.message || "The sign-in page could not be opened.");
-    }
+    } catch (failure) { setError(failure.message || "The sign-in page could not be opened."); }
+  }
+
+  async function changeDefault(mode) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await codexMuxRoutingRequest("personalWork/mode/set", { hostId: "local", mode });
+      await refresh();
+      codexMuxBroadcastChange();
+    } catch (failure) { setError(failure.message); }
+    finally { setBusy(false); }
   }
 
   return (0, e7.jsxs)("div", {
-    "data-codex-personal-work": "accounts",
-    role: "group",
-    "aria-label": "Personal and work accounts",
-    className: "px-2 py-2",
-    style: { minWidth: 270, maxWidth: 340 },
-    onKeyDown: (event) => {
-      if (event.target.tagName === "SELECT" && event.key !== "Escape") event.stopPropagation();
-    },
+    "data-codex-personal-work": "accounts", role: "group", "aria-label": "Personal and work accounts",
+    // Native profile menus are narrower than a settings panel. Every child
+    // must shrink to this width; clipping a too-wide row hides usable controls.
+    style: { boxSizing: "border-box", width: "100%", minWidth: 0, maxWidth: "100%", padding: "8px 4px" },
+    onPointerDown: (event) => event.stopPropagation(),
+    onKeyDown: (event) => { if (event.key !== "Escape") event.stopPropagation(); },
     children: [
-      (0, e7.jsx)("div", { className: "px-1 pb-2 text-xs font-medium text-token-text-secondary", children: "Personal & Work" }),
-      ...CODEX_MUX_MODES.map((item) => {
-        const account = accounts.find((candidate) => candidate.id === roles[item.role]);
-        const otherRole = item.role === "personal" ? "work" : "personal";
-        return (0, e7.jsxs)("div", {
-          className: "flex items-center gap-2 rounded-lg px-1 py-2",
-          children: [
-            (0, e7.jsx)(CodexMuxAccountAvatar, { label: item.role === "personal" ? "Personal" : "Work", imageUrl: account?.profileImageUrl, className: "size-7 shrink-0" }),
-            (0, e7.jsxs)("div", {
-              className: "min-w-0 flex-1",
-              children: [
-                (0, e7.jsx)("label", { htmlFor: `${prefix}-${item.role}`, className: "block text-sm font-medium text-token-text-primary", children: item.role === "personal" ? "Personal" : "Work" }),
-                (0, e7.jsx)("div", { className: "text-xs text-token-text-tertiary", children: `${item.label}${account && !account.connected ? " · Sign in again" : ""}` }),
-              ],
-            }),
-            (0, e7.jsxs)("select", {
-              id: `${prefix}-${item.role}`,
-              value: roles[item.role] || "",
-              disabled: busy || !routing,
-              "aria-label": `${item.role === "personal" ? "Personal" : "Work"} account`,
-              title: account?.email || account?.label || "Choose an account",
-              className: "max-w-40 rounded-md border border-token-border bg-token-bg-primary px-2 py-1 text-xs text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border",
-              style: { fontFamily: "inherit", minWidth: 132 },
-              onChange: (event) => assignRole(item.role, event.target.value),
-              children: [
-                (0, e7.jsx)("option", { value: "", children: "Not assigned" }),
-                ...accounts.filter((candidate) => candidate.enabled || candidate.id === roles[item.role]).map((candidate) => (0, e7.jsx)("option", {
-                  value: candidate.id,
-                  disabled: candidate.id === roles[otherRole],
-                  children: candidate.email || candidate.label || candidate.id,
-                }, candidate.id)),
-              ],
-            }),
-          ],
-        }, item.id);
-      }),
-      (0, e7.jsx)("div", { className: "my-2 border-t border-token-border" }),
-      (0, e7.jsx)(CodexMuxWorkflowSelector, {}),
-      (0, e7.jsx)("div", { className: "my-2 border-t border-token-border" }),
-      login ? (0, e7.jsxs)("div", {
-        className: "space-y-2 px-1 py-1",
+      (0, e7.jsxs)("div", {
+        style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, minWidth: 0 },
         children: [
-          (0, e7.jsx)("div", { className: "text-xs text-token-text-secondary", children: `Sign in to ${login.role === "work" ? "your work" : login.role === "personal" ? "your personal" : "an"} account in your browser.` }),
-          login.userCode ? (0, e7.jsx)("div", { className: "font-mono text-sm text-token-text-primary", children: login.userCode }) : null,
-          (0, e7.jsx)("button", { type: "button", onClick: continueLogin, className: "w-full rounded-lg bg-token-foreground/5 px-3 py-2 text-left text-sm text-token-text-primary hover:bg-token-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", children: codeCopied ? "Code copied · Continue sign-in" : "Copy code and sign in" }),
+          (0, e7.jsx)("span", { className: "text-xs font-medium text-token-text-secondary", children: login ? `${login.role === "work" ? "Work" : "Personal"} sign-in` : "Accounts" }),
+          (0, e7.jsx)("button", {
+            type: "button", className: actionClass, style: { padding: "3px 6px", flexShrink: 0 },
+            "aria-expanded": login ? undefined : managing,
+            onClick: (event) => {
+              event.preventDefault(); event.stopPropagation(); setError("");
+              if (login) { codexMuxLoginActive = false; setLogin(null); } else setManaging(!managing);
+            },
+            children: login ? "Cancel" : managing ? "Done" : "Manage",
+          }),
         ],
-      }) : (0, e7.jsx)("button", {
-        type: "button",
-        role: "menuitem",
-        disabled: busy || !routing,
-        onClick: (event) => connectAccount(missingRole || null, event),
-        className: "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-text-primary hover:bg-token-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border disabled:opacity-50",
-        children: busy ? "Connecting…" : missingRole ? `${roles[missingRole] ? "Sign in to" : "Connect"} ${missingRole} account…` : "Connect another account…",
       }),
-      error || loadError ? (0, e7.jsx)("div", { role: "alert", className: "px-1 pt-2 text-xs text-token-text-secondary", children: error || loadError }) : null,
-      connected.length ? (0, e7.jsx)("div", { className: "px-1 pt-2 text-xs text-token-text-tertiary", children: "Each task uses the account you choose." }) : null,
+      login ? (0, e7.jsxs)("div", {
+        style: { display: "grid", gap: 8, minWidth: 0 },
+        children: [
+          (0, e7.jsx)("p", { className: "text-xs text-token-text-secondary", style: { margin: 0, whiteSpace: "normal", lineHeight: "17px" }, children: "Copy this code, then enter it on the sign-in page." }),
+          login.userCode ? (0, e7.jsxs)("div", {
+            className: "rounded-lg border border-token-border bg-token-foreground/5",
+            style: { display: "flex", alignItems: "center", gap: 4, minWidth: 0, width: "100%", boxSizing: "border-box", padding: "4px 6px" },
+            children: [
+              (0, e7.jsx)("input", {
+                type: "text", readOnly: true, value: login.userCode, "aria-label": "Sign-in code", spellCheck: false,
+                className: "font-mono text-sm text-token-text-primary focus-visible:outline-none",
+                style: { display: "block", width: 0, minWidth: 0, flex: "1 1 0%", border: 0, background: "transparent", padding: "6px 0", fontSize: 14, letterSpacing: "0.04em", userSelect: "text", WebkitUserSelect: "text" },
+                onFocus: (event) => event.currentTarget.select(), onClick: (event) => event.currentTarget.select(),
+              }),
+              (0, e7.jsx)("button", { type: "button", onClick: copyLoginCode, "aria-label": "Copy sign-in code", className: actionClass, style: { flexShrink: 0, padding: "6px 8px" }, children: codeCopied ? "Copied ✓" : "Copy" }),
+            ],
+          }) : null,
+          (0, e7.jsx)("button", { type: "button", onClick: continueLogin, className: "rounded-lg bg-token-text-primary text-token-bg-primary hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", style: { width: "100%", minWidth: 0, padding: "8px 10px", fontSize: 12, fontWeight: 500 }, children: "Open sign-in page ↗" }),
+          (0, e7.jsx)("span", { role: "status", "aria-live": "polite", className: "text-xs text-token-text-tertiary", children: codeCopied ? "Code copied to clipboard" : "Waiting for sign-in…" }),
+        ],
+      }) : managing ? (0, e7.jsxs)("div", {
+        style: { display: "grid", gap: 8, minWidth: 0 },
+        children: [
+          (0, e7.jsx)(CodexMuxAccountAssignments, { accounts, roles, busy: busy || !routing, prefix, onAssign: assignRole }),
+          (0, e7.jsx)("button", { type: "button", disabled: busy || !routing, onClick: (event) => connectAccount(null, event), className: actionClass, style: { width: "100%", padding: "6px 8px", textAlign: "left" }, children: "Add another account…" }),
+        ],
+      }) : (0, e7.jsx)("div", {
+        style: { display: "grid", gap: 2, minWidth: 0 },
+        children: CODEX_MUX_MODES.map((item) => {
+          const account = accounts.find((candidate) => candidate.id === roles[item.role]);
+          const ready = account?.connected && account?.enabled;
+          const label = item.role === "personal" ? "Personal" : "Work";
+          return (0, e7.jsxs)("div", {
+            style: { display: "flex", alignItems: "center", gap: 8, minWidth: 0, padding: "6px 0" },
+            children: [
+              (0, e7.jsx)(CodexMuxAccountAvatar, { label, imageUrl: account?.profileImageUrl, className: "size-7 shrink-0" }),
+              (0, e7.jsxs)("div", {
+                style: { flex: "1 1 0%", minWidth: 0 },
+                children: [
+                  (0, e7.jsxs)("div", { style: { display: "flex", alignItems: "baseline", gap: 5, minWidth: 0 }, children: [
+                    (0, e7.jsx)("span", { className: "text-sm font-medium text-token-text-primary", children: label }),
+                    (0, e7.jsx)("span", { className: "text-token-text-tertiary", style: { fontSize: 10 }, children: item.label }),
+                  ] }),
+                  (0, e7.jsx)("div", { className: "truncate text-xs text-token-text-tertiary", title: account?.email || "", children: ready ? account.email || account.label : routing ? "Not connected" : "Loading…" }),
+                ],
+              }),
+              ready ? (0, e7.jsx)("span", { "aria-label": "Connected", className: "text-token-text-tertiary", style: { fontSize: 12, flexShrink: 0, paddingRight: 4 }, children: "✓" })
+                : (0, e7.jsx)("button", { type: "button", "aria-label": `Connect ${label} account`, disabled: busy || !routing, onClick: (event) => connectAccount(item.role, event), className: actionClass, style: { flexShrink: 0, padding: "5px 6px" }, children: busy ? "…" : "Connect" }),
+            ],
+          }, item.id);
+        }),
+      }),
+      !login && !managing ? (0, e7.jsxs)("div", {
+        className: "border-t border-token-border",
+        style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, paddingTop: 8, marginTop: 6, minWidth: 0 },
+        children: [
+          (0, e7.jsx)("label", { htmlFor: `${prefix}-default`, className: "text-xs text-token-text-secondary", children: "New tasks" }),
+          (0, e7.jsx)("select", { id: `${prefix}-default`, value: routing?.defaultMode || "casual", disabled: busy || !routing, "aria-label": "Default workflow for new tasks", className: "rounded-md bg-token-foreground/5 text-xs text-token-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-token-focus-border", style: { boxSizing: "border-box", minWidth: 0, maxWidth: "58%", padding: "5px 6px", border: 0, fontFamily: "inherit" }, onChange: (event) => changeDefault(event.target.value), children: CODEX_MUX_MODES.map((item) => (0, e7.jsx)("option", { value: item.id, children: item.label }, item.id)) }),
+        ],
+      }) : null,
+      error || loadError ? (0, e7.jsx)("div", { role: "alert", className: "text-xs text-token-text-secondary", style: { marginTop: 8, lineHeight: "16px", whiteSpace: "normal", overflowWrap: "anywhere" }, children: error || loadError }) : null,
     ],
   });
 }
