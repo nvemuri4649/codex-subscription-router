@@ -5,6 +5,20 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-11
+
+- Support verified official build 8881 with original router UI and current
+  account-aware profile, plugin and reset controls.
+- Disable native updater capability at construction and in app menus, including
+  manual and late feature-flag paths. Retain runtime dependency downloads.
+- Stage verified source snapshots and candidates separately from the active app.
+  Unknown builds and hash/anchor/signature failures leave the working copy intact.
+- Activate only after the app is stopped, retain the previous bundle, and provide
+  rollback guarded against changes to the shared database schema.
+- Never stop tasks during installation, update credentials, or roll back history.
+
+[0.2.2]: https://github.com/nvemuri4649/codex-subscription-router/tree/restore-upstream
+
 ## [0.2.1] - 2026-09-11
 
 - Restore the original subscription pool, menus, manual task switching, and

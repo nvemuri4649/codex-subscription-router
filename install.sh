@@ -5,8 +5,6 @@ set -euo pipefail
 readonly REPOSITORY_URL="https://github.com/nvemuri4649/codex-subscription-router.git"
 readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
-readonly DESTINATION_APP="${HOME}/Applications/Codex Subscription Router.app"
-readonly DESTINATION_HELPER="${HOME}/Applications/Codex Subscription Router Computer Use.app"
 
 log() {
     printf '\n==> %s\n' "$1" >&2
@@ -90,31 +88,6 @@ resolve_source_dir() {
     printf '%s\n' "${SOURCE_DIR}"
 }
 
-stop_bundle_processes() {
-    local bundle_path="$1"
-    local process_id
-    local command_line
-    local attempt
-
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        local found_process="false"
-        for process_id in $(pgrep -f "${bundle_path}/Contents/" 2>/dev/null || true); do
-            command_line="$(ps -p "${process_id}" -o command= 2>/dev/null || true)"
-            case "${command_line}" in
-                "${bundle_path}/Contents/"*)
-                    found_process="true"
-                    kill "${process_id}" 2>/dev/null || true
-                    ;;
-            esac
-        done
-        if [ "${found_process}" = "false" ]; then
-            return
-        fi
-        sleep 1
-    done
-    fail "could not stop processes belonging to ${bundle_path}."
-}
-
 main() {
     log "Checking this Mac"
     require_prerequisites
@@ -126,24 +99,12 @@ main() {
     log "Installing locked build tools"
     npm ci --ignore-scripts --no-audit --no-fund
 
-    local patch_arguments=()
-    if [ -d "${DESTINATION_APP}" ] || [ -d "${DESTINATION_HELPER}" ]; then
-        log "Stopping the existing installation"
-        stop_bundle_processes "${DESTINATION_APP}"
-        stop_bundle_processes "${DESTINATION_HELPER}"
-        patch_arguments+=("--force")
-    fi
-
-    log "Building and signing Codex Subscription Router"
-    if [ "${#patch_arguments[@]}" -ne 0 ]; then
-        python3 scripts/patch_app.py "${patch_arguments[@]}"
-    else
-        python3 scripts/patch_app.py
-    fi
-
-    log "Launching Codex Subscription Router"
-    open "${DESTINATION_APP}"
-    printf '\nInstalled successfully: %s\n' "${DESTINATION_APP}"
+    log "Preparing a verified Codex Subscription Router build"
+    # The updater stages first and refuses activation while the app is running.
+    # Its nonzero pending-update status stops this script without sending signals
+    # or opening another app instance.
+    python3 scripts/update_router.py install --launch
+    log "Codex Subscription Router installation completed"
 }
 
 main "$@"

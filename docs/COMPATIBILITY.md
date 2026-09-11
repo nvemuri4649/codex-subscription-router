@@ -69,3 +69,19 @@ and the desktop profile in the sibling `desktop` directory. Account metadata
 may be imported using `build_current.py --import-state PATH --controller-account ID`.
 Existing credential homes stay in place and must not be deleted after import.
 See [build validation](BUILD-8576.md) for tested and unverified behavior.
+
+## Release 0.2.2
+
+| Component | Reviewed value |
+| --- | --- |
+| Official version | `26.908.40834` |
+| Build | `8881` |
+| ASAR SHA-256 | `bb40cd8811887363104a19291346af9595632e0e956316a1086b274fb8e3eafc` |
+| Download bytes | `575938573` |
+| Official signing team | `2DC432GLL2` |
+
+The source archive was verified against its Sparkle Ed25519 signature, then
+extracted and verified with strict code signing and Gatekeeper notarization.
+Build 8576 remains supported with the corrected updater capability gates.
+Source bundles are snapshotted and revalidated before extraction and packaging.
+See [managed updates](UPDATES.md) for update and rollback guarantees and limits.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the upstream Subscription Router for reviewed desktop build 8576."""
+"""Build an independent Subscription Router from a reviewed official desktop bundle."""
 from __future__ import annotations
 
 import argparse
@@ -27,6 +27,30 @@ STATE = Path.home() / "Library/Application Support/Codex Subscription Router"
 VERSION = ("26.903.71938", "8576")
 SOURCE_HASH = "58fef82480b9064e209b5b2fd934992e8d71515aea8084482369cfeaff1b8ee0"
 PORT = 48123
+REVIEWED_BUILDS = {
+    VERSION: SOURCE_HASH,
+    ("26.908.40834", "8881"): "bb40cd8811887363104a19291346af9595632e0e956316a1086b274fb8e3eafc",
+}
+
+
+def reviewed_source(source: Path) -> tuple[dict, tuple[str, str], str]:
+    info = plistlib.loads((source / "Contents/Info.plist").read_bytes())
+    version = (str(info["CFBundleShortVersionString"]), str(info["CFBundleVersion"]))
+    if version not in REVIEWED_BUILDS:
+        raise RuntimeError(f"Unsupported official build {version[0]} ({version[1]}); the working router is unchanged")
+    digest = hashlib.sha256((source / "Contents/Resources/app.asar").read_bytes()).hexdigest()
+    if digest != REVIEWED_BUILDS[version]:
+        raise RuntimeError(f"Official build {version[1]} has an unreviewed ASAR hash; the working router is unchanged")
+    return info, version, digest
+
+
+def verify_official_source(source: Path) -> None:
+    legacy.run(['codesign', '--verify', '--deep', '--strict', str(source)])
+    signed = subprocess.run(['codesign', '-dv', '--verbose=4', str(source)],
+                            check=True, capture_output=True, text=True).stderr
+    if 'TeamIdentifier=2DC432GLL2' not in signed or 'Identifier=com.openai.codex\n' not in signed:
+        raise RuntimeError('Build input must be the reviewed, signed official OpenAI desktop app')
+
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -42,28 +66,42 @@ def one(root: Path, pattern: str) -> Path:
     return found[0]
 
 
-def patch_main(extracted: Path, state: Path, primary_home: Path) -> None:
-    bootstrap = one(extracted / ".vite/build", "bootstrap-*.js")
+def patch_main(extracted: Path, state: Path, primary_home: Path, source_build: str = "8576") -> None:
+    build_root = extracted / ".vite/build"
+    bootstrap = one(build_root, "bootstrap-*.js")
+    updater_path = one(build_root, "window-all-closed-*.js")
+    main_path = one(build_root, "main-*.js")
     text = bootstrap.read_text()
     text = replace_once(text,
         "a.app.setPath(`userData`,w({appDataPath:a.app.getPath(`appData`),buildFlavor:Z,env:process.env}))",
         "a.app.setPath(`userData`," + json.dumps(str(state / "desktop")) + ")", "independent desktop state")
+    # Keep native initialization: when disabled, it resolves the launch-policy
+    # promise so manual update requests settle instead of waiting indefinitely.
     text = replace_once(text, "try{await i.initialize();let{runMainAppStartup:e}",
-        "try{let{runMainAppStartup:e}", "copied-app updater startup")
-    bootstrap.write_text(text)
+        "try{await i.initialize();let{runMainAppStartup:e}", "updater launch-policy initialization")
+    bindings = {
+        "8576": ("r", "S=a.i.shouldIncludeSparkle(c,process.platform,process.env),C=a.i.shouldIncludeUpdater(c,process.platform,process.env)", "S=!1,C=!1"),
+        "8881": ("s", "C=a.i.shouldIncludeSparkle(u,process.platform,process.env),w=a.i.shouldIncludeUpdater(u,process.platform,process.env)", "C=!1,w=!1"),
+    }
+    updater_arg, flags, disabled_flags = bindings[source_build]
+    updater = replace_once(updater_path.read_text(),
+        f"enableUpdater:i.i.shouldIncludeUpdater({updater_arg},process.platform,process.env)",
+        "enableUpdater:!1", "copied-app updater capability")
+    main = replace_once(main_path.read_text(),
+        flags, disabled_flags, "copied-app update menu capabilities")
     # Environment is established before imported bootstrap modules can compute paths.
     early = extracted / ".vite/build/early-bootstrap.js"
     env = {"CODEX_HOME": str(primary_home), "CODEX_MUX_HOME": str(state / "router"),
            "CODEX_MUX_CONTROL_PORT": str(PORT), "CODEX_ELECTRON_USER_DATA_PATH": str(state / "desktop")}
-    early.write_text("Object.assign(process.env," + json.dumps(env) + ");\n"
+    early_text = "Object.assign(process.env," + json.dumps(env) + ");\n" \
         + "process.env.CODEX_CLI_PATH=require('node:path').join(process.resourcesPath,'codex');\n"
-        + early.read_text())
-    # Disable all update entry points, including a later renderer feature sync.
-    for path in (extracted / ".vite/build").glob("*.js"):
-        text = path.read_text()
-        if "async initializeUpdater(" in text:
-            text, count = re.subn(r"async initializeUpdater\(([^)]*)\)\{", r"async initializeUpdater(\1){return;", text)
-            path.write_text(text)
+    early_text += early.read_text()
+    # Validate all reviewed anchors before changing the extracted bundles.
+    # The disabled manager also guards manual and late feature-latch paths.
+    bootstrap.write_text(text)
+    updater_path.write_text(updater)
+    main_path.write_text(main)
+    early.write_text(early_text)
 
 
 def state_import(state: Path, source_home: Path, import_state: Path | None = None, controller_account: str | None = None) -> dict | None:
@@ -112,22 +150,22 @@ def asar_header_hash(path: Path) -> str:
         return hashlib.sha256(stream.read(length)).hexdigest()
 
 
-def build(args: argparse.Namespace) -> None:
+def build(args: argparse.Namespace) -> dict | None:
+    if args.destination.expanduser().is_symlink():
+        raise RuntimeError('Destination must not be a symlink')
     source, destination, state = args.source.expanduser().resolve(), args.destination.expanduser().resolve(), args.state.expanduser().resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise RuntimeError("Source and generated copy must be separate bundles")
-    source_asar = source / "Contents/Resources/app.asar"
-    info = plistlib.loads((source / "Contents/Info.plist").read_bytes())
-    version = (info["CFBundleShortVersionString"], info["CFBundleVersion"])
-    digest = hashlib.sha256(source_asar.read_bytes()).hexdigest()
-    if version != VERSION or digest != SOURCE_HASH:
-        raise RuntimeError(f"Unreviewed source build {version}; update compatibility anchors before building")
-    if destination.exists() and not args.force:
-        raise RuntimeError("Destination exists. Use --force to retain a backup and replace it.")
-    state_import(state, args.codex_home.expanduser().resolve(),
-        args.import_state.expanduser().resolve() if args.import_state else None, args.controller_account)
-    if args.force and not args.check_only:
-        legacy.ensure_components_are_stopped((destination,))
+    info, version, digest = reviewed_source(source)
+    verify_official_source(source)
+    if destination.exists() and not args.check_only:
+        raise RuntimeError('Existing app bundles are updated through scripts/update_router.py; they are never overwritten by the builder')
+    record_build = getattr(args, 'record_build', True)
+    if record_build:
+        state_import(state, args.codex_home.expanduser().resolve(),
+            args.import_state.expanduser().resolve() if args.import_state else None, args.controller_account)
+    elif not (state / 'router/state.json').is_file():
+        raise RuntimeError('Prepare requires an existing router installation; use install for first setup')
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
     router = state / "router"
@@ -144,12 +182,28 @@ def build(args: argparse.Namespace) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".subscription-router-build-", dir=destination.parent) as temporary:
         temp = Path(temporary)
+        # Patch a verified snapshot; an official update during this build must
+        # never mix files from two desktop releases.
+        snapshot = temp / "official-source.app"
+        legacy.run(['ditto', str(source), str(snapshot)])
+        snapshot_info, snapshot_version, snapshot_digest = reviewed_source(snapshot)
+        verify_official_source(snapshot)
+        if (snapshot_version, snapshot_digest) != (version, digest):
+            raise RuntimeError('Official source changed during snapshot; retry without replacing the working app')
+        source, info = snapshot, snapshot_info
+        source_asar = snapshot / "Contents/Resources/app.asar"
         extracted = temp / "extracted"
         legacy.run([str(asar), "extract", str(source_asar), str(extracted)])
         before = {path: path.stat().st_mtime_ns for path in extracted.rglob('*.js')}
-        patch_renderer_8576(extracted, token, PORT)
-        patch_settings_8576(extracted, token, PORT)
-        patch_main(extracted, state, args.codex_home.expanduser().resolve())
+        if version[1] == '8576':
+            patch_renderer_8576(extracted, token, PORT)
+            patch_settings_8576(extracted, token, PORT)
+        else:
+            from patch_renderer_8881 import patch_renderer_8881
+            from patch_settings_8881 import patch_settings_8881
+            patch_renderer_8881(extracted, token, PORT)
+            patch_settings_8881(extracted, token, PORT)
+        patch_main(extracted, state, args.codex_home.expanduser().resolve(), version[1])
         for path in sorted(path for path in extracted.rglob('*.js') if path.stat().st_mtime_ns != before.get(path)):
             legacy.run(["node", "--check", str(path)])
         if args.check_only:
@@ -194,20 +248,21 @@ def build(args: argparse.Namespace) -> None:
             legacy.sign_runtime_bundle(bundle,identity,runtime=identity!='-')
         legacy.sign_runtime_bundle(staged,identity,identifier=BUNDLE_ID,runtime=False)
         legacy.run(['codesign','--verify','--deep','--strict',str(staged)])
+        # A candidate is immutable once built. The activation manager handles
+        # replacing a previous app only after checking that it has stopped.
         if destination.exists():
-            backup=state/'backups'/time.strftime('%Y%m%d-%H%M%S')/destination.name
-            backup.parent.mkdir(parents=True)
-            destination.rename(backup)
-        try:
-            staged.rename(destination)
-        except OSError:
-            if not destination.exists() and 'backup' in locals() and backup.exists():
-                backup.rename(destination)
-            raise
-    seed_state(state,args.codex_home.expanduser().resolve(),args.import_state.expanduser().resolve() if args.import_state else None,args.controller_account)
-    report={'app':str(destination),'sourceVersion':version[0],'sourceBuild':version[1],'sourceAsarSha256':digest,'signing':'ad-hoc' if identity=='-' else 'certificate','state':str(state),'builtAt':time.strftime('%Y-%m-%dT%H:%M:%S%z')}
-    (state/'build.json').write_text(json.dumps(report,indent=2)+'\n')
+            raise RuntimeError('Candidate destination appeared during build; refusing replacement')
+        staged.rename(destination)
+    report={'app':str(destination),'sourceVersion':version[0],'sourceBuild':version[1],
+        'sourceAsarSha256':digest,'signing':'ad-hoc' if identity=='-' else 'certificate',
+        'state':str(state),'codexHome':str(args.codex_home.expanduser().resolve()),
+        'routerVersion':(ROOT/'VERSION').read_text().strip(),'updatePolicy':'router-managed',
+        'builtAt':time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+    if record_build:
+        seed_state(state,args.codex_home.expanduser().resolve(),args.import_state.expanduser().resolve() if args.import_state else None,args.controller_account)
+        (state/'build.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
+    return report
 
 
 if __name__ == '__main__':

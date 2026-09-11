@@ -1517,8 +1517,11 @@ def main() -> int:
     args = parse_args()
     try:
         info = plistlib.loads((args.source.expanduser() / "Contents/Info.plist").read_bytes())
-        if str(info.get("CFBundleVersion")) == "8576":
+        if str(info.get("CFBundleVersion")) in {"8576", "8881"}:
             import build_current
+            if args.destination.expanduser().exists():
+                import update_router
+                return update_router.main(['install', '--source', str(args.source), '--destination', str(args.destination)])
             build_current.build(argparse.Namespace(
                 source=args.source, destination=args.destination, force=args.force,
                 state=build_current.STATE, codex_home=Path.home() / ".codex",

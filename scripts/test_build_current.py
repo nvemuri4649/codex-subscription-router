@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_current import asar_header_hash, seed_state
+from build_current import asar_header_hash, patch_main, seed_state
 
 
 class SeedStateTests(unittest.TestCase):
@@ -150,6 +150,78 @@ class AsarHeaderHashTests(unittest.TestCase):
         first, _ = self.archive("first.asar", {"files": {"one": {"size": 3, "offset": "0"}}}, b"one")
         second, _ = self.archive("second.asar", {"files": {"two": {"size": 3, "offset": "0"}}}, b"one")
         self.assertNotEqual(asar_header_hash(first), asar_header_hash(second))
+
+
+class DesktopUpdaterPatchTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.extracted = self.root / "extracted"
+        self.build = self.extracted / ".vite/build"
+        self.build.mkdir(parents=True)
+        self.bootstrap = self.build / "bootstrap-fixture.js"
+        self.updater = self.build / "window-all-closed-fixture.js"
+        self.main = self.build / "main-fixture.js"
+        self.early = self.build / "early-bootstrap.js"
+        self.policy_init = "try{await i.initialize();let{runMainAppStartup:e}"
+        self.manager_flag = "enableUpdater:i.i.shouldIncludeUpdater(r,process.platform,process.env)"
+        self.menu_flags = "S=a.i.shouldIncludeSparkle(c,process.platform,process.env),C=a.i.shouldIncludeUpdater(c,process.platform,process.env)"
+        self.runtime = "async function installRuntime(){return primaryRuntime.finishInstall({hostId:`local`,release:`latest`})}"
+        self.bootstrap.write_text(
+            "async function boot(){"
+            "a.app.setPath(`userData`,w({appDataPath:a.app.getPath(`appData`),buildFlavor:Z,env:process.env}));"
+            + self.policy_init + "=await import('./main-fixture.js');await e()}catch(e){throw e}}"
+        )
+        # A native manager method and its independently supplied capability are
+        # retained as separate fixture boundaries; no method is stubbed out.
+        self.manager_method = (
+            "initializeUpdater(){return this.options.enableUpdater?"
+            "(this.updaterInitialization??=this.initializeUpdaterOnce(),this.updaterInitialization):Promise.resolve()}"
+        )
+        self.updater.write_text(
+            "class Ww{" + self.manager_method + "}\n"
+            + "const services={sparkleManager:new Ww({" + self.manager_flag + ",buildFlavor:r})};"
+        )
+        self.main.write_text("const " + self.menu_flags + ";\n" + self.runtime)
+        self.early.write_text("require('./bootstrap-fixture.js');\n")
+
+    def patch(self):
+        patch_main(self.extracted, self.root / "router state", self.root / "account home")
+
+    def test_native_initialization_remains_and_both_menu_capabilities_are_disabled(self):
+        self.patch()
+        self.assertEqual(self.bootstrap.read_text().count(self.policy_init), 1)
+        self.assertIn("const S=!1,C=!1;", self.main.read_text())
+        self.assertNotIn("shouldIncludeSparkle", self.main.read_text())
+        self.assertNotIn("shouldIncludeUpdater", self.main.read_text())
+
+    def test_manager_capability_is_disabled_without_stubbing_manual_methods(self):
+        self.patch()
+        updater = self.updater.read_text()
+        self.assertIn("sparkleManager:new Ww({enableUpdater:!1,buildFlavor:r})", updater)
+        self.assertNotIn(self.manager_flag, updater)
+        self.assertIn(self.manager_method, updater)
+
+    def test_primary_runtime_install_and_cli_bootstrap_remain_available(self):
+        self.patch()
+        self.assertEqual(self.main.read_text().split("\n", 1)[1], self.runtime)
+        self.assertIn("process.env.CODEX_CLI_PATH=require('node:path').join(process.resourcesPath,'codex');", self.early.read_text())
+        self.assertTrue(self.early.read_text().endswith("require('./bootstrap-fixture.js');\n"))
+
+    def test_missing_or_duplicate_update_anchor_fails_before_any_bundle_is_written(self):
+        paths = [self.bootstrap, self.updater, self.main, self.early]
+        originals = {path: path.read_text() for path in paths}
+        for target, anchor in ((self.bootstrap, self.policy_init), (self.updater, self.manager_flag), (self.main, self.menu_flags)):
+            for replacement in ("changed-native-anchor", anchor + anchor):
+                with self.subTest(bundle=target.name, duplicate=replacement == anchor + anchor):
+                    for path, text in originals.items():
+                        path.write_text(text)
+                    target.write_text(originals[target].replace(anchor, replacement))
+                    before = {path: path.read_bytes() for path in paths}
+                    with self.assertRaisesRegex(RuntimeError, "expected one reviewed anchor"):
+                        self.patch()
+                    self.assertEqual({path: path.read_bytes() for path in paths}, before)
 
 
 if __name__ == "__main__":

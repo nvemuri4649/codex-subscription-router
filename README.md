@@ -3,7 +3,7 @@
 This personal fork preserves the original experience from
 [`vrlda/codex-subscription-router`](https://github.com/vrlda/codex-subscription-router)
 and [`b-nnett/codex-subscription-router`](https://github.com/b-nnett/codex-subscription-router),
-with compatibility fixes for ChatGPT desktop **26.903.71938 (8576)**.
+with compatibility fixes for ChatGPT desktop **26.908.40834 (8881)** and **26.903.71938 (8576)**.
 The experimental Casual/Intensive customization has been removed.
 
 Normal ChatGPT chats and cloud Work tasks use the primary account. Local Codex
@@ -13,7 +13,8 @@ available, using the account configured on that remote host; this original
 router does not pool remote subscriptions.
 
 Screenshots below show the upstream interface. See [build 8576 validation](docs/BUILD-8576.md)
-for the checks performed on this fork and remaining native integration limits.
+for the earlier fork checks and native integration limits. [Managed updates](docs/UPDATES.md)
+describes the protected update and rollback workflow.
 
 ![Multi-subscription account menu](screenshots/account-menu.png)
 
@@ -93,8 +94,8 @@ Codex Subscription Router currently targets:
 | Component | Supported value |
 | --- | --- |
 | Platform | macOS on Apple silicon |
-| Official ChatGPT versions | `26.903.71938` (current), `26.803.61601`, `26.825.32147`, `26.825.41651` (legacy) |
-| Official bundle builds | `8576` (current), `6396`, `7303`, `7345` (legacy) |
+| Official ChatGPT versions | `26.908.40834`, `26.903.71938` (current), `26.803.61601`, `26.825.32147`, `26.825.41651` (legacy) |
+| Official bundle builds | `8881`, `8576` (current), `6396`, `7303`, `7345` (legacy) |
 | Go | 1.26 or newer |
 | Node.js | 22.12 or newer |
 
@@ -125,6 +126,9 @@ dependency, creates the independently signed app, and launches it:
 curl -fsSL https://raw.githubusercontent.com/nvemuri4649/codex-subscription-router/main/install.sh | /bin/bash
 ```
 
+The installer prepares updates without stopping running tasks. Activation waits
+until the router has been quit; the previous app is retained.
+
 The installer keeps its source checkout in
 `~/.codex-subscription-router/source`. On an existing installation it uses the
 same account state and creates a recoverable backup. Legacy builds require
@@ -146,8 +150,7 @@ compatibility check fails.
 git clone https://github.com/nvemuri4649/codex-subscription-router.git
 cd codex-subscription-router
 npm ci --ignore-scripts
-python3 scripts/patch_app.py
-open "$HOME/Applications/Codex Subscription Router.app"
+python3 scripts/update_router.py install --launch
 ```
 
 This creates:
@@ -244,21 +247,24 @@ the reset is consumed only for that account.
 
 ## Update or rebuild
 
-The copied app's updater is disabled so an official update cannot overwrite the
-patch. Update `/Applications/ChatGPT.app`, verify that the new build is listed
-as compatible, then rebuild:
+Official app updates are disabled inside the router copy. Its own update path
+verifies a source snapshot and builds a separate candidate. Unsupported versions
+leave the working app intact. Prepare first, then activate after finishing tasks
+and quitting the app:
 
 ```sh
-python3 scripts/patch_app.py --force
+python3 scripts/update_router.py prepare
+python3 scripts/update_router.py activate --launch
 ```
 
-Quit Codex Subscription Router and its Computer Use helper first. Existing
-destinations are moved to timestamped backup directories under the router state root;
-account state and credentials are stored outside the app bundle and remain
-intact. Delete old backups manually after the rebuilt app passes the smoke test.
+Use `--source /path/to/ChatGPT.app` for a separately extracted official bundle.
+The prior app stays available for `python3 scripts/update_router.py rollback`;
+rollback refuses unverified database schema changes. Logins and history are never
+rolled back. [Managed updates](docs/UPDATES.md) explains the checks and limits.
 
-Build separately for each macOS user. Generated bundles contain user-specific
-helper and socket paths and are not relocatable or intended for redistribution.
+Future native UI releases still require reviewed compatibility adapters. This
+protects the installed app from a bad update; it cannot guarantee indefinite
+access to changing remote services.
 
 ## Local data and security
 
@@ -268,7 +274,8 @@ helper and socket paths and are not relocatable or intended for redistribution.
 | `~/Library/Application Support/Codex Subscription Router/router/state.json` | Current account metadata and sticky task ownership |
 | `~/Library/Application Support/Codex Subscription Router/router/accounts/<id>/codex-home` | New isolated account homes |
 | `~/Library/Application Support/Codex Subscription Router/router/control-token` | Loopback control token |
-| `~/Library/Application Support/Codex Subscription Router/backups` | Recoverable app backups |
+| `~/Library/Application Support/Codex Subscription Router/updates` | Prepared candidates, previous bundles, activation journal |
+| `~/Library/Application Support/Codex Subscription Router/backups` | Earlier recoverable app backups |
 | `~/Library/Application Support/Codex Subscription Router/desktop` | Independent desktop profile |
 | `~/.codex-mux` | Legacy build state |
 
